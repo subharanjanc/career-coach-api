@@ -9,6 +9,7 @@ request body.
 
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from openai import OpenAI
 from pydantic import BaseModel, Field
@@ -141,11 +142,12 @@ def next_question(role: str, job_description: str, focus: str,
     started = time.perf_counter()
     client = get_client()
     parts = []
+    asked = len(turns) + 1          # the question just answered counts
+    last = asked >= MAX_QUESTIONS
 
-    # 1. mark the answer against the question that produced it
-    scored = None
-    try:
-        s = client.responses.parse(
+    def mark():
+        """Score the answer that was just given."""
+        return client.responses.parse(
             model=MODEL,
             instructions=(
                 f"You are marking ONE interview answer for a {role} role. Judge only what the "
@@ -156,27 +158,39 @@ def next_question(role: str, job_description: str, focus: str,
             input=[{"role": "user",
                     "content": f"QUESTION:\n{question}\n\nCANDIDATE ANSWER:\n{answer}"}],
             text_format=AnswerScore)
-        scored = s.output_parsed.model_dump()
-        parts.append(_usage(s))
-    except Exception:
-        scored = None          # marking must never break the interview
 
-    asked = len(turns) + 1          # the question just answered counts
-    if asked >= MAX_QUESTIONS:
-        return {"question": None, "answer_score": scored, "asked": asked, "done": True,
-                "seconds": round(time.perf_counter() - started, 1),
-                "estimated_cost_usd": _cost(parts)}
+    def ask():
+        """Compose the next question from the transcript so far."""
+        history = transcript_text(turns + [Turn(question=question, answer=answer)])
+        return client.responses.create(
+            model=MODEL, max_output_tokens=600,
+            instructions=interview_system(role, jd, focus, asked),
+            input=[{"role": "user",
+                    "content": history +
+                    "\n\nRespond to their last answer and ask your next question."}])
 
-    # 2. ask the next one
-    history = transcript_text(turns + [Turn(question=question, answer=answer)])
-    r = client.responses.create(
-        model=MODEL, max_output_tokens=600,
-        instructions=interview_system(role, jd, focus, asked),
-        input=[{"role": "user",
-                "content": history + "\n\nRespond to their last answer and ask your next question."}])
-    parts.append(_usage(r))
-    return {"question": (r.output_text or "").strip(), "answer_score": scored,
-            "asked": asked + 1, "done": False,
+    # The two calls do not depend on each other, so run them together. Sequentially
+    # a turn costs both latencies and exceeded the client timeout in production.
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        mark_future = pool.submit(mark)
+        ask_future = None if last else pool.submit(ask)
+
+        scored = None
+        try:
+            m = mark_future.result()
+            scored = m.output_parsed.model_dump()
+            parts.append(_usage(m))
+        except Exception:
+            scored = None          # marking must never break the interview
+
+        question_text = None
+        if ask_future is not None:
+            r = ask_future.result()
+            question_text = (r.output_text or "").strip()
+            parts.append(_usage(r))
+
+    return {"question": question_text, "answer_score": scored,
+            "asked": asked if last else asked + 1, "done": last,
             "seconds": round(time.perf_counter() - started, 1),
             "estimated_cost_usd": _cost(parts)}
 
