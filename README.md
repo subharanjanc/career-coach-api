@@ -14,6 +14,8 @@ marks every answer out of 10, and scores the whole interview at the end.
 | `POST` | `/start` | Role + optional job description → the first question |
 | `POST` | `/answer` | An answer → that answer marked, plus the next question |
 | `POST` | `/finish` | The transcript → overall score, strengths, weaknesses, fixes |
+| `POST` | `/cv` | A pasted CV → match score, green points, red points |
+| `POST` | `/cv/upload` | A PDF, DOCX, TXT or MD file → the same review |
 | `GET` | `/health` | Liveness, model, limits |
 
 ### `POST /answer`
@@ -97,11 +99,34 @@ Vercel, from this repo. Set `OPENAI_API_KEY` in the project's environment
 variables **before** the first deploy — without it the build still succeeds,
 `/health` works, and every interview call returns `503`.
 
-## Not built yet
+## CV review
 
-- **CV reviewer mode** — upload or paste a CV, feedback on content, clarity,
-  formatting, errors, relevant skills, improvements
-- Both modes in one app, which is what the brief ultimately asks for
+Runs before the interview: role → job advert → CV → questions. It can be skipped.
+
+`CVReview` is a Pydantic model, so the shape is guaranteed:
+
+- `match_score` 1–10, and a one-sentence headline
+- `green` and `red` — each point tagged with a dimension the brief names:
+  content, clarity, formatting, errors, relevant skills
+- `evidenced_requirements` / `missing_requirements` — split straight from the advert
+- `quick_wins` — changes doable in under an hour
+
+Extraction uses `pypdf` and `python-docx`, including DOCX tables, because CVs
+often keep dates in them. A scanned PDF with no text layer is refused with an
+explanation rather than silently reviewed as empty.
+
+The prompt forbids assuming experience that is not written down: an unevidenced
+requirement goes to `missing_requirements` rather than being charitably assumed.
+A reviewer that invents qualifications is worse than no reviewer.
+
+## Brief status
+
+| Requirement | State |
+|---|---|
+| 1. Mock interview mode | done, deployed |
+| 2. CV reviewer mode | done, deployed |
+| 3. One app containing both | done |
+| Bonus challenges (5) | not started |
 
 ## Limits
 
