@@ -9,17 +9,19 @@
 Stateless: the browser returns the transcript on every call.
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
 from openai import APITimeoutError
 from pydantic import BaseModel, Field
 
 try:
-    from .coach import (MAX_JD_CHARS, MAX_QUESTIONS, MODEL, Turn,
-                        final_feedback, first_question, next_question)
+    from .coach import (MAX_CV_CHARS, MAX_JD_CHARS, MAX_QUESTIONS, MODEL, Turn,
+                        extract_cv_text, final_feedback, first_question,
+                        next_question, review_cv)
 except ImportError:                                  # pragma: no cover
-    from coach import (MAX_JD_CHARS, MAX_QUESTIONS, MODEL, Turn,
-                       final_feedback, first_question, next_question)
+    from coach import (MAX_CV_CHARS, MAX_JD_CHARS, MAX_QUESTIONS, MODEL, Turn,
+                       extract_cv_text, final_feedback, first_question,
+                       next_question, review_cv)
 
 app = FastAPI(title="AI Career Coach", version="1.0.0",
               description="Mock interview practice. Mini-project, Ironhack AI FT Sept 26.")
@@ -37,6 +39,12 @@ class AnswerRequest(StartRequest):
         description="Completed question/answer pairs; empty on the first answer")
     question: str = Field(..., description="The question currently being answered")
     answer: str = Field(..., description="The candidate's answer to it")
+
+
+class CVRequest(BaseModel):
+    role: str = Field(..., description="Target job title")
+    job_description: str = Field(default="", description="Optional advert to match against")
+    cv_text: str = Field(..., description="The CV as plain text")
 
 
 class FinishRequest(BaseModel):
@@ -73,10 +81,33 @@ def finish(r: FinishRequest):
     return _guard(final_feedback, r.role, r.turns)
 
 
+@app.post("/cv")
+def cv(r: CVRequest):
+    """Review a pasted CV against the role and, if given, the advert."""
+    return _guard(review_cv, r.role, r.job_description, r.cv_text)
+
+
+@app.post("/cv/upload")
+async def cv_upload(file: UploadFile = File(...),
+                    role: str = Form(...),
+                    job_description: str = Form("")):
+    """Same review, but from an uploaded PDF, DOCX or text file."""
+    data = await file.read()
+    if len(data) > 4_000_000:
+        raise HTTPException(status_code=422, detail="That file is larger than 4 MB.")
+    try:
+        text = extract_cv_text(data, file.filename or "")
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return _guard(review_cv, role, job_description, text)
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "model": MODEL, "max_questions": MAX_QUESTIONS,
-            "max_job_description_chars": MAX_JD_CHARS}
+            "max_job_description_chars": MAX_JD_CHARS,
+            "max_cv_chars": MAX_CV_CHARS,
+            "modes": ["mock interview", "cv review"]}
 
 
 PAGE = """<!doctype html>
@@ -127,6 +158,17 @@ PAGE = """<!doctype html>
   .bar textarea { min-height:46px; max-height:160px }
   .hidden { display:none }
   .big { font-size:30px; font-weight:600 }
+  .rev { border:1px solid var(--line); border-radius:12px; padding:14px 16px; margin:10px 0;
+         background:var(--card) }
+  .rev h3 { font-size:14px; margin:12px 0 6px; font-weight:600 }
+  .pt { margin:4px 0; font-size:14px; line-height:1.5 }
+  .pt .dim { font-size:11px; text-transform:uppercase; letter-spacing:.05em;
+             color:var(--muted); margin-right:6px }
+  .pill { display:inline-block; font-size:12px; padding:3px 9px; border-radius:999px;
+          margin:3px 4px 0 0; background:var(--card2); color:var(--muted) }
+  .pill.ok { color:var(--good) } .pill.no { color:var(--bad) }
+  .row { display:flex; gap:8px; flex-wrap:wrap; margin-top:16px }
+  input[type=file] { padding:9px; background:var(--card) }
 </style></head><body>
 <div class="wrap">
   <h1>AI Career Coach<span>.</span></h1>
@@ -140,8 +182,18 @@ PAGE = """<!doctype html>
     <input id="focus" placeholder="tool calling, system design">
     <label for="jd">Job description (optional, sharper questions)</label>
     <textarea id="jd" placeholder="Paste the advert here..."></textarea>
-    <div style="margin-top:16px"><button id="go">Start interview</button></div>
+    <label for="cvfile">Your CV &mdash; upload (PDF, DOCX, TXT)</label>
+    <input id="cvfile" type="file" accept=".pdf,.docx,.txt,.md">
+    <label for="cvtext">&hellip;or paste it instead</label>
+    <textarea id="cvtext" placeholder="Paste your CV text here..."></textarea>
+
+    <div class="row">
+      <button id="review">Review my CV</button>
+      <button id="go" class="ghost">Skip and start interview</button>
+    </div>
   </div>
+
+  <div id="cvout"></div>
 
   <div id="log"></div>
 </div>
@@ -200,6 +252,70 @@ function waiting(text){
   return () => { clearInterval(id); d.remove(); };
 }
 
+function reviewCard(d){
+  const hue = d.match_score >= 7 ? "var(--good)" : (d.match_score >= 5 ? "var(--warn)" : "var(--bad)");
+  let h = "<div class='who'>cv review</div>";
+  h += "<div class='big' style='color:" + hue + "'>" + d.match_score + "/10</div>";
+  h += "<div style='margin-bottom:8px'>" + esc(d.headline) + "</div>";
+
+  if(d.green.length){
+    h += "<h3 class='g'>What works</h3>";
+    d.green.forEach(p => h += "<div class='pt g'><span class='dim'>" + esc(p.dimension)
+                           + "</span>" + esc(p.point) + "</div>");
+  }
+  if(d.red.length){
+    h += "<h3 class='b'>What needs improving</h3>";
+    d.red.forEach(p => h += "<div class='pt b'><span class='dim'>" + esc(p.dimension)
+                          + "</span>" + esc(p.point) + "</div>");
+  }
+  if(d.evidenced_requirements.length || d.missing_requirements.length){
+    h += "<h3>Against the advert</h3><div>";
+    d.evidenced_requirements.forEach(x => h += "<span class='pill ok'>&#10003; " + esc(x) + "</span>");
+    d.missing_requirements.forEach(x => h += "<span class='pill no'>&#10007; " + esc(x) + "</span>");
+    h += "</div>";
+  }
+  if(d.quick_wins.length){
+    h += "<h3>Quick wins</h3>";
+    d.quick_wins.forEach(x => h += "<div class='pt'>&bull; " + esc(x) + "</div>");
+  }
+  const el = document.createElement("div");
+  el.className = "rev"; el.style.borderLeft = "4px solid " + hue; el.innerHTML = h;
+  $("cvout").appendChild(el);
+  const b = document.createElement("button");
+  b.textContent = "Start the interview"; b.style.marginTop = "12px";
+  b.onclick = () => { $("cvout").innerHTML = ""; $("go").click(); };
+  $("cvout").appendChild(b);
+  scroll();
+}
+
+$("review").onclick = async () => {
+  const role = $("role").value.trim();
+  if(!role){ alert("Tell it which role first."); return; }
+  const f = $("cvfile").files[0];
+  const pasted = $("cvtext").value.trim();
+  if(!f && !pasted){ alert("Upload a CV or paste the text."); return; }
+  $("review").disabled = true; $("go").disabled = true;
+  $("cvout").innerHTML = "";
+  const stop = waiting("reading your CV against the role...");
+  try{
+    let d;
+    if(f){
+      const fd = new FormData();
+      fd.append("file", f);
+      fd.append("role", role);
+      fd.append("job_description", $("jd").value.trim());
+      const r = await fetch("/cv/upload", { method:"POST", body: fd });
+      d = await r.json();
+      if(!r.ok) throw new Error(d.detail || ("HTTP " + r.status));
+    } else {
+      d = await post("/cv", { role: role, job_description: $("jd").value.trim(),
+                              cv_text: pasted });
+    }
+    stop(); S.spent += d.estimated_cost_usd; reviewCard(d);
+  }catch(e){ stop(); bubble("error", e.message); }
+  $("review").disabled = false; $("go").disabled = false;
+};
+
 $("go").onclick = async () => {
   S.role = $("role").value.trim(); S.focus = $("focus").value.trim(); S.jd = $("jd").value.trim();
   if(!S.role){ alert("Tell it which role first."); return; }
@@ -207,7 +323,8 @@ $("go").onclick = async () => {
   const stop = waiting("preparing your interview...");
   try{
     const d = await post("/start", { role:S.role, job_description:S.jd, focus:S.focus });
-    stop(); $("setup").classList.add("hidden"); $("bar").classList.remove("hidden");
+    stop(); $("setup").classList.add("hidden"); $("cvout").innerHTML = "";
+    $("bar").classList.remove("hidden");
     S.lastQ = d.question; S.asked = d.asked; S.spent += d.estimated_cost_usd;
     bubble("interviewer", d.question);
     meta("question " + d.asked + " of """ + str(MAX_QUESTIONS) + """ \\u00b7 $" + S.spent.toFixed(5));

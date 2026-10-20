@@ -213,3 +213,114 @@ def final_feedback(role: str, turns: list[Turn]) -> dict:
             "questions_answered": len(turns),
             "seconds": round(time.perf_counter() - started, 1),
             "estimated_cost_usd": _cost([_usage(r)])}
+
+
+# ------------------------------------------------------------------ CV review
+MAX_CV_CHARS = 20000
+ALLOWED_CV = {".pdf", ".docx", ".txt", ".md"}
+
+DIMENSIONS = "content, clarity, formatting, errors, relevant skills"
+
+
+class CVPoint(BaseModel):
+    dimension: str = Field(description=f"One of: {DIMENSIONS}")
+    point: str = Field(description="One specific observation, quoting the CV where useful")
+
+
+class CVReview(BaseModel):
+    """A CV judged against one role and, when given, one job advert."""
+    match_score: int = Field(ge=1, le=10, description="How well this CV fits THIS role, 1-10")
+    headline: str = Field(description="One sentence a recruiter would recognise as fair")
+    green: list[CVPoint] = Field(description="What already works. Empty if genuinely nothing.")
+    red: list[CVPoint] = Field(description="What needs improving. Empty if genuinely nothing.")
+    evidenced_requirements: list[str] = Field(
+        default_factory=list,
+        description="Requirements from the advert the CV clearly evidences")
+    missing_requirements: list[str] = Field(
+        default_factory=list,
+        description="Requirements from the advert with no evidence in the CV")
+    quick_wins: list[str] = Field(
+        default_factory=list,
+        description="Changes doable in under an hour, in priority order")
+
+
+def extract_cv_text(data: bytes, filename: str) -> str:
+    """Pull plain text out of a PDF, DOCX or text file."""
+    suffix = ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
+    if suffix not in ALLOWED_CV:
+        raise ValueError(f"Unsupported file type '{suffix or filename}'. "
+                         f"Use one of: {', '.join(sorted(ALLOWED_CV))}.")
+    if not data:
+        raise ValueError("The uploaded file is empty.")
+
+    if suffix in (".txt", ".md"):
+        return data.decode("utf-8", errors="replace")
+
+    if suffix == ".pdf":
+        import io
+
+        from pypdf import PdfReader
+        try:
+            reader = PdfReader(io.BytesIO(data))
+        except Exception:
+            raise ValueError("That PDF could not be read. Try exporting it again, or paste the text.")
+        pages = [(p.extract_text() or "") for p in reader.pages]
+        text = "\n".join(pages).strip()
+        if not text:
+            raise ValueError("No text found in that PDF - it may be a scan. "
+                             "Paste the text instead, or export a text-based PDF.")
+        return text
+
+    import io
+
+    from docx import Document
+    try:
+        doc = Document(io.BytesIO(data))
+    except Exception:
+        raise ValueError("That DOCX could not be read. Try saving it again, or paste the text.")
+    parts = [p.text for p in doc.paragraphs]
+    for table in doc.tables:                     # CVs often keep dates in tables
+        for row in table.rows:
+            parts.append(" | ".join(c.text for c in row.cells))
+    text = "\n".join(x for x in parts if x.strip()).strip()
+    if not text:
+        raise ValueError("No text found in that document.")
+    return text
+
+
+def review_cv(role: str, job_description: str, cv_text: str) -> dict:
+    """Judge a CV against a role and, when supplied, a specific advert."""
+    role = (role or "").strip()
+    if not 2 <= len(role) <= MAX_ROLE_CHARS:
+        raise ValueError(f"Role must be between 2 and {MAX_ROLE_CHARS} characters.")
+    cv_text = (cv_text or "").strip()
+    if len(cv_text) < 120:
+        raise ValueError("That CV looks too short to review. Paste the full text or upload a file.")
+    if len(cv_text) > MAX_CV_CHARS:
+        raise ValueError(f"The CV must be at most {MAX_CV_CHARS:,} characters.")
+    jd = (job_description or "").strip()[:MAX_JD_CHARS]
+
+    advert = (f"THE ADVERT:\n---\n{jd}\n---\n" if jd else
+              "No advert was supplied. Judge the CV against the role in general, and leave "
+              "evidenced_requirements and missing_requirements empty.\n")
+
+    started = time.perf_counter()
+    r = get_client(timeout=55.0).responses.parse(
+        model=MODEL,
+        instructions=(
+            f"You are reviewing a CV for a {role} role.\n\n{advert}\n"
+            "Judge only what is written in the CV. Never assume experience that is not there, "
+            "and never invent a qualification. Quote the CV's own words when you make a point.\n"
+            f"Every green and red point must carry a dimension from: {DIMENSIONS}.\n"
+            "Be useful, not polite: if a section is weak, say which section and why. "
+            "quick_wins are changes doable in under an hour - rewording, reordering, adding a "
+            "number - not 'gain more experience'.\n"
+            "If the advert lists a requirement the CV does not evidence, put it in "
+            "missing_requirements rather than guessing that the candidate has it."),
+        input=[{"role": "user", "content": f"CV:\n{cv_text}"}],
+        text_format=CVReview)
+    out = r.output_parsed.model_dump()
+    out["seconds"] = round(time.perf_counter() - started, 1)
+    out["estimated_cost_usd"] = _cost([_usage(r)])
+    out["cv_chars"] = len(cv_text)
+    return out
