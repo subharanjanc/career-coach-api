@@ -355,6 +355,23 @@ $("send").onclick = async () => {
   $("send").disabled = false; $("fin").disabled = false; $("ans").focus();
 };
 
+function readyForNextRun(){
+  // Keep the transcript and the feedback on screen; bring the setup back under
+  // it so another CV or another interview is one click, with the role, advert
+  // and CV still filled in. A page reload would discard all of that.
+  S.turns = []; S.asked = 0; S.lastQ = ""; S.done = false;
+  $("bar").classList.add("hidden");
+  $("setup").classList.remove("hidden");
+  $("review").disabled = false;
+  $("go").disabled = false;
+  const note = document.createElement("div");
+  note.className = "meta";
+  note.textContent = "Review another CV, or start a fresh interview below. "
+                   + "Your role, advert and CV are still filled in.";
+  log.appendChild(note);
+  $("setup").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
 async function finish(){
   if(S.done) return;
   if(!S.turns.length){ bubble("coach", "Answer at least one question first."); return; }
@@ -378,10 +395,7 @@ async function finish(){
     const d2 = document.createElement("div"); d2.className = "msg"; d2.innerHTML = h;
     log.appendChild(d2);
     meta(d.questions_answered + " answers \\u00b7 $" + S.spent.toFixed(5) + " total");
-    const again = document.createElement("button");
-    again.textContent = "Start another interview"; again.style.marginTop = "12px";
-    again.onclick = () => location.reload();
-    log.appendChild(again); scroll();
+    readyForNextRun();
   }catch(e){ stop(); S.done = false; $("send").disabled=false; $("fin").disabled=false;
              bubble("error", e.message); }
 }
