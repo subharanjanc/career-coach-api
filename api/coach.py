@@ -10,6 +10,7 @@ request body.
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
+from typing import Literal
 
 from openai import OpenAI
 from pydantic import BaseModel, Field
@@ -21,6 +22,7 @@ MAX_QUESTIONS = 8
 MAX_JD_CHARS = 6000
 MAX_ANSWER_CHARS = 4000
 MAX_ROLE_CHARS = 80
+MIN_JD_FOR_FIT = 80       # a job-fit analysis is meaningless without the advert
 
 
 def get_client(timeout: float = 45.0):
@@ -325,6 +327,163 @@ def review_cv(role: str, job_description: str, cv_text: str) -> dict:
         input=[{"role": "user", "content": f"CV:\n{cv_text}"}],
         text_format=CVReview)
     out = r.output_parsed.model_dump()
+    out["seconds"] = round(time.perf_counter() - started, 1)
+    out["estimated_cost_usd"] = _cost([_usage(r)])
+    out["cv_chars"] = len(cv_text)
+    return out
+
+
+# ------------------------------------------------------- job fit / skills gap
+# The CV reviewer already split the advert's requirements into two buckets, but
+# its match_score was a holistic opinion - four identical requests returned
+# 5, 5, 4, 5. A job-match score that moves on its own is not a measurement. So
+# here the model only CLASSIFIES each requirement; the score is arithmetic, done
+# in Python, and every number behind it is returned so it can be checked by hand.
+
+WEIGHT = {True: 3, False: 1}            # a must-have counts three nice-to-haves
+CREDIT = {"evidenced": 1.0, "partial": 0.5, "missing": 0.0}
+CAP_WITH_MISSING_MUST = 7               # see score_fit()
+
+
+class Requirement(BaseModel):
+    """One requirement lifted from the advert, judged against the CV."""
+    requirement: str = Field(description="The requirement in the advert's own words, kept short")
+    must_have: bool = Field(
+        description="True if the advert calls it required/essential, False if preferred/nice")
+    status: Literal["evidenced", "partial", "missing"] = Field(
+        description="evidenced: the CV clearly shows it. partial: adjacent, dated or "
+                    "unquantified experience. missing: nothing in the CV supports it.")
+    evidence: str | None = Field(
+        default=None, description="Short quote from the CV. Null when status is missing.")
+    note: str | None = Field(
+        default=None, description="For partial/missing: what would close this gap. Else null.")
+
+
+class FitAnalysis(BaseModel):
+    """The model's classification work. The score is deliberately not asked of it."""
+    requirements: list[Requirement] = Field(
+        description="Every distinct requirement stated in the advert. Invent none.")
+    headline: str = Field(description="One sentence a recruiter would recognise as fair")
+    transferable: list[str] = Field(
+        default_factory=list,
+        description="Experience in the CV the advert does not ask for but would value")
+    improvements: list[str] = Field(
+        default_factory=list,
+        description="Changes to the CV that would raise the fit, strongest first")
+
+
+def score_fit(reqs: list[Requirement]) -> dict:
+    """Turn the classification into a score by arithmetic rather than opinion.
+
+    Weighted credit: a must-have is worth three nice-to-haves, a partial match
+    half an evidenced one. The result is capped while any must-have is entirely
+    unevidenced - a CV is not a strong fit for a job whose hard requirement it
+    never mentions, however much of the rest it covers. `basis` carries every
+    number, so the score can be recomputed on paper.
+    """
+    if not reqs:
+        return {"score": None, "basis": None}
+
+    possible = sum(WEIGHT[r.must_have] for r in reqs)
+    earned = sum(WEIGHT[r.must_have] * CREDIT[r.status] for r in reqs)
+    raw = 1 + 9 * (earned / possible)                  # 1-10, never 0
+
+    musts = [r for r in reqs if r.must_have]
+    nices = [r for r in reqs if not r.must_have]
+    blocking = [r.requirement for r in musts if r.status == "missing"]
+
+    score = round(raw)
+    capped_at = None
+    if blocking and score > CAP_WITH_MISSING_MUST:
+        score, capped_at = CAP_WITH_MISSING_MUST, CAP_WITH_MISSING_MUST
+
+    def tally(group):
+        return {"total": len(group),
+                "evidenced": sum(1 for r in group if r.status == "evidenced"),
+                "partial": sum(1 for r in group if r.status == "partial"),
+                "missing": sum(1 for r in group if r.status == "missing")}
+
+    return {"score": score,
+            "basis": {"earned": round(earned, 2), "possible": possible,
+                      "raw_score": round(raw, 2), "capped_at": capped_at,
+                      "must_have": tally(musts), "nice_to_have": tally(nices),
+                      "blocking": blocking,
+                      "weights": {"must_have": WEIGHT[True], "nice_to_have": WEIGHT[False],
+                                  "credit": CREDIT}}}
+
+
+def analyse_fit(role: str, job_description: str, cv_text: str) -> dict:
+    """Compare one CV against one advert, requirement by requirement, then score it."""
+    role = (role or "").strip()
+    if not 2 <= len(role) <= MAX_ROLE_CHARS:
+        raise ValueError(f"Role must be between 2 and {MAX_ROLE_CHARS} characters.")
+    jd = (job_description or "").strip()
+    if len(jd) < MIN_JD_FOR_FIT:
+        # With no advert there is no requirement list, so there is nothing to
+        # measure against. Refusing beats returning a score built on nothing.
+        raise ValueError("Job-fit analysis needs the job advert - paste at least a few lines of "
+                         "it. For a CV judged without an advert, use Review my CV instead.")
+    if len(jd) > MAX_JD_CHARS:
+        raise ValueError(f"The job description must be at most {MAX_JD_CHARS:,} characters.")
+    cv_text = (cv_text or "").strip()
+    if len(cv_text) < 120:
+        raise ValueError("That CV looks too short to analyse. Paste the full text or upload a file.")
+    if len(cv_text) > MAX_CV_CHARS:
+        raise ValueError(f"The CV must be at most {MAX_CV_CHARS:,} characters.")
+
+    started = time.perf_counter()
+    r = get_client(timeout=55.0).responses.parse(
+        model=MODEL,
+        instructions=(
+            f"You are matching one CV against one job advert for a {role} role.\n\n"
+            f"THE ADVERT:\n---\n{jd}\n---\n\n"
+            "Pull out every distinct requirement the advert states - skills, tools, years, "
+            "languages, degrees, certifications, ways of working. Use the advert's own wording, "
+            "kept short. Do not add a requirement "
+            "the advert does not state.\n\n"
+            "ONE REQUIREMENT PER THING ASKED FOR. Work down the advert line by line. A line "
+            "naming two separate skills (Docker und Kubernetes) becomes two. A line describing "
+            "one capability stays one: do not restate it in different words, do not split a "
+            "capability from the way it is exercised, and never list the same requirement "
+            "twice. Building agents that call tools and APIs is ONE requirement, not three.\n\n"
+            "Set must_have true when the advert marks it required or essential, or states it as "
+            "a plain expectation; false when it says preferred, ideally, nice to have, or a plus."
+            "\n\nThen judge each one against the CV, on what is written there and nothing else:\n"
+            "- evidenced: the CV clearly shows it. Quote the CV in `evidence`.\n"
+            "- partial: the CV shows something adjacent, dated, or unquantified - a related "
+            "tool, fewer years than asked, the skill implied but never named. Quote what you "
+            "did find, and say in `note` what would close the gap.\n"
+            "- missing: nothing in the CV supports it. Leave `evidence` null.\n\n"
+            "The line between evidenced and partial is the CV's own words. If the CV names the "
+            "thing the advert asked for, it is evidenced. If it only shows something from which "
+            "the skill could be inferred, it is partial, however strong the inference - a CV that "
+            "never writes \"prompt engineering\" does not evidence prompt engineering by "
+            "mentioning LLM APIs.\n\n"
+            "Never mark a requirement evidenced because the role usually involves it or because "
+            "it seems likely for someone with this background. An unevidenced requirement is "
+            "missing. Do not score the candidate: the score is computed from your "
+            "classification, not asked of you.\n\n"
+            "`improvements` are changes to this CV, strongest first - what to add, where a "
+            "number belongs, which experience to pull forward. Not 'gain more experience'.\n\n"
+            "LANGUAGE. Write in the language of the advert, but keep technical terms, tool "
+            "names, job titles and certifications in English - scikit-learn, Data Warehouse, "
+            "Transfer Learning, Scrum Master, B.Tech - exactly as a German hiring manager would "
+            "write them. Do not translate them, and do not switch language part-way through."),
+        input=[{"role": "user", "content": f"CV:\n{cv_text}"}],
+        text_format=FitAnalysis)
+
+    analysis = r.output_parsed
+    scored = score_fit(analysis.requirements)
+    out = analysis.model_dump()
+    out["match_score"] = scored["score"]
+    out["score_basis"] = scored["basis"]
+    # The skills gap, worst first: blocking must-haves, then other must-haves,
+    # then partial matches, so the top of the list is what actually costs the job.
+    out["gaps"] = [{"requirement": q.requirement, "must_have": q.must_have,
+                    "status": q.status, "note": q.note}
+                   for q in sorted(analysis.requirements,
+                                   key=lambda q: (q.status == "partial", not q.must_have))
+                   if q.status in ("missing", "partial")]
     out["seconds"] = round(time.perf_counter() - started, 1)
     out["estimated_cost_usd"] = _cost([_usage(r)])
     out["cv_chars"] = len(cv_text)

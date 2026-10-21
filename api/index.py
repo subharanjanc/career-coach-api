@@ -4,6 +4,8 @@
     POST /start     role + job description -> first question
     POST /answer    an answer -> that answer marked, plus the next question
     POST /finish    the transcript -> overall score and feedback
+    POST /cv        a CV -> a review against the role, and the advert if given
+    POST /jobfit    a CV + an advert -> requirement-by-requirement fit, scored
     GET  /health    liveness
 
 Stateless: the browser returns the transcript on every call.
@@ -15,13 +17,13 @@ from openai import APITimeoutError
 from pydantic import BaseModel, Field
 
 try:
-    from .coach import (MAX_CV_CHARS, MAX_JD_CHARS, MAX_QUESTIONS, MODEL, Turn,
-                        extract_cv_text, final_feedback, first_question,
-                        next_question, review_cv)
+    from .coach import (MAX_CV_CHARS, MAX_JD_CHARS, MAX_QUESTIONS, MIN_JD_FOR_FIT,
+                        MODEL, Turn, analyse_fit, extract_cv_text, final_feedback,
+                        first_question, next_question, review_cv)
 except ImportError:                                  # pragma: no cover
-    from coach import (MAX_CV_CHARS, MAX_JD_CHARS, MAX_QUESTIONS, MODEL, Turn,
-                       extract_cv_text, final_feedback, first_question,
-                       next_question, review_cv)
+    from coach import (MAX_CV_CHARS, MAX_JD_CHARS, MAX_QUESTIONS, MIN_JD_FOR_FIT,
+                       MODEL, Turn, analyse_fit, extract_cv_text, final_feedback,
+                       first_question, next_question, review_cv)
 
 app = FastAPI(title="AI Career Coach", version="1.0.0",
               description="Mock interview practice. Mini-project, Ironhack AI FT Sept 26.")
@@ -44,6 +46,12 @@ class AnswerRequest(StartRequest):
 class CVRequest(BaseModel):
     role: str = Field(..., description="Target job title")
     job_description: str = Field(default="", description="Optional advert to match against")
+    cv_text: str = Field(..., description="The CV as plain text")
+
+
+class FitRequest(BaseModel):
+    role: str = Field(..., description="Target job title")
+    job_description: str = Field(..., description="The advert - required for a fit analysis")
     cv_text: str = Field(..., description="The CV as plain text")
 
 
@@ -102,12 +110,34 @@ async def cv_upload(file: UploadFile = File(...),
     return _guard(review_cv, role, job_description, text)
 
 
+@app.post("/jobfit")
+def jobfit(r: FitRequest):
+    """Score a CV against one advert, requirement by requirement."""
+    return _guard(analyse_fit, r.role, r.job_description, r.cv_text)
+
+
+@app.post("/jobfit/upload")
+async def jobfit_upload(file: UploadFile = File(...),
+                        role: str = Form(...),
+                        job_description: str = Form(...)):
+    """Same analysis, but from an uploaded PDF, DOCX or text file."""
+    data = await file.read()
+    if len(data) > 4_000_000:
+        raise HTTPException(status_code=422, detail="That file is larger than 4 MB.")
+    try:
+        text = extract_cv_text(data, file.filename or "")
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return _guard(analyse_fit, role, job_description, text)
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "model": MODEL, "max_questions": MAX_QUESTIONS,
             "max_job_description_chars": MAX_JD_CHARS,
             "max_cv_chars": MAX_CV_CHARS,
-            "modes": ["mock interview", "cv review"]}
+            "min_job_description_chars_for_fit": MIN_JD_FOR_FIT,
+            "modes": ["mock interview", "cv review", "job fit"]}
 
 
 PAGE = """<!doctype html>
@@ -169,11 +199,25 @@ PAGE = """<!doctype html>
   .pill.ok { color:var(--good) } .pill.no { color:var(--bad) }
   .row { display:flex; gap:8px; flex-wrap:wrap; margin-top:16px }
   input[type=file] { padding:9px; background:var(--card) }
+  .req { display:flex; gap:9px; align-items:flex-start; padding:7px 0;
+         border-bottom:1px solid var(--line); font-size:14px }
+  .req:last-child { border-bottom:0 }
+  .req .mk { flex:0 0 18px; line-height:1.5; text-align:center }
+  .req .rq { font-weight:600 }
+  .req .ev { color:var(--muted); font-size:12.5px; display:block; margin-top:2px }
+  .req .nt { color:var(--accent2); font-size:12.5px; display:block; margin-top:2px }
+  .tag { font-size:10px; text-transform:uppercase; letter-spacing:.05em;
+         padding:1px 6px; border-radius:4px; background:var(--card2);
+         color:var(--muted); margin-left:7px; vertical-align:1px }
+  .sum { font-size:12.5px; color:var(--muted); background:var(--card2);
+         border-radius:8px; padding:9px 12px; margin:10px 0; line-height:1.65 }
+  .sum b { color:var(--ink) }
 </style></head><body>
 <div class="wrap">
   <h1>AI Career Coach<span>.</span></h1>
   <div class="sub">Paste the job you are preparing for. It interviews you one question at a
-    time, marks every answer, and scores the whole thing at the end.</div>
+    time, marks every answer, and scores the whole thing at the end. Or have your CV
+    reviewed, or matched against the advert requirement by requirement.</div>
 
   <div id="setup">
     <label for="role">Role you are preparing for</label>
@@ -189,6 +233,7 @@ PAGE = """<!doctype html>
 
     <div class="row">
       <button id="review">Review my CV</button>
+      <button id="fit" class="ghost">Job-fit analysis</button>
       <button id="go" class="ghost">Skip and start interview</button>
     </div>
   </div>
@@ -288,33 +333,133 @@ function reviewCard(d){
   scroll();
 }
 
-$("review").onclick = async () => {
+// /cv and /jobfit take the same CV in the same two ways, so the
+// upload-or-paste dance lives here once instead of once per button.
+async function postCV(jsonPath, uploadPath){
   const role = $("role").value.trim();
-  if(!role){ alert("Tell it which role first."); return; }
+  if(!role) throw new Error("Tell it which role first.");
   const f = $("cvfile").files[0];
   const pasted = $("cvtext").value.trim();
-  if(!f && !pasted){ alert("Upload a CV or paste the text."); return; }
-  $("review").disabled = true; $("go").disabled = true;
-  $("cvout").innerHTML = "";
-  const stop = waiting("reading your CV against the role...");
+  if(!f && !pasted) throw new Error("Upload a CV or paste the text.");
+  const jd = $("jd").value.trim();
+  if(f){
+    const fd = new FormData();
+    fd.append("file", f); fd.append("role", role); fd.append("job_description", jd);
+    const r = await fetch(uploadPath, { method:"POST", body: fd });
+    const d = await r.json();
+    if(!r.ok) throw new Error(d.detail || ("HTTP " + r.status));
+    return d;
+  }
+  return await post(jsonPath, { role: role, job_description: jd, cv_text: pasted });
+}
+
+function busy(on){ ["review","fit","go"].forEach(id => { $(id).disabled = on; }); }
+
+async function runCV(label, jsonPath, uploadPath, render){
+  busy(true); $("cvout").innerHTML = "";
+  const stop = waiting(label);
   try{
-    let d;
-    if(f){
-      const fd = new FormData();
-      fd.append("file", f);
-      fd.append("role", role);
-      fd.append("job_description", $("jd").value.trim());
-      const r = await fetch("/cv/upload", { method:"POST", body: fd });
-      d = await r.json();
-      if(!r.ok) throw new Error(d.detail || ("HTTP " + r.status));
-    } else {
-      d = await post("/cv", { role: role, job_description: $("jd").value.trim(),
-                              cv_text: pasted });
-    }
-    stop(); S.spent += d.estimated_cost_usd; reviewCard(d);
+    const d = await postCV(jsonPath, uploadPath);
+    stop(); S.spent += d.estimated_cost_usd; render(d);
   }catch(e){ stop(); bubble("error", e.message); }
-  $("review").disabled = false; $("go").disabled = false;
+  busy(false);
+}
+
+$("review").onclick = () =>
+  runCV("reading your CV against the role...", "/cv", "/cv/upload", reviewCard);
+
+$("fit").onclick = () => {
+  // The server refuses a fit analysis without an advert; saying so here saves
+  // the round trip. The threshold is the server's own, not a second opinion.
+  if($("jd").value.trim().length < """ + str(MIN_JD_FOR_FIT) + """){
+    alert("A job-fit analysis needs the advert - that is where the requirements are "
+        + "read from. Paste the job description above, then try again.");
+    return;
+  }
+  runCV("matching your CV against the advert...", "/jobfit", "/jobfit/upload", fitCard);
 };
+
+const MARK = { evidenced:["&#10003;","var(--good)"], partial:["&#126;","var(--warn)"],
+               missing:["&#10007;","var(--bad)"] };
+
+function reqRow(q){
+  const m = MARK[q.status] || MARK.missing;
+  let h = "<div class='req'><div class='mk' style='color:" + m[1] + "'>" + m[0] + "</div><div>";
+  h += "<span class='rq'>" + esc(q.requirement) + "</span>";
+  h += "<span class='tag'>" + (q.must_have ? "must have" : "nice to have") + "</span>";
+  if(q.evidence) h += "<span class='ev'>CV: " + esc(q.evidence) + "</span>";
+  if(q.note)     h += "<span class='nt'>" + esc(q.note) + "</span>";
+  return h + "</div></div>";
+}
+
+function fitCard(d){
+  const sc = d.match_score;
+  const hue = sc >= 7 ? "var(--good)" : (sc >= 5 ? "var(--warn)" : "var(--bad)");
+  let h = "<div class='who'>job fit against the advert</div>";
+  h += "<div class='big' style='color:" + hue + "'>"
+     + (sc === null ? "&mdash;" : sc + "/10") + "</div>";
+  h += "<div style='margin-bottom:4px'>" + esc(d.headline) + "</div>";
+
+  // The score is arithmetic, so show the arithmetic. A number you cannot
+  // recompute is a number you cannot defend in a real interview.
+  const b = d.score_basis;
+  if(b){
+    h += "<div class='sum'>Counted, not guessed: <b>" + b.earned + " of " + b.possible
+       + "</b> weighted points (a must-have counts " + b.weights.must_have
+       + ", a nice-to-have " + b.weights.nice_to_have
+       + "; a partial match earns half) &rarr; <b>" + b.raw_score + "</b>";
+    if(b.capped_at !== null && b.capped_at !== undefined){
+      h += ", held down to <b>" + b.capped_at + "</b> because a must-have is missing: "
+         + esc(b.blocking.join(", "));
+    }
+    h += ".<br>Must-haves: <b>" + b.must_have.evidenced + "</b> evidenced, <b>"
+       + b.must_have.partial + "</b> partial, <b>" + b.must_have.missing
+       + "</b> missing, of " + b.must_have.total;
+    if(b.nice_to_have.total){
+      h += ". Nice-to-haves: <b>" + b.nice_to_have.evidenced + "</b> of "
+         + b.nice_to_have.total + " evidenced";
+    }
+    h += ".</div>";
+  }
+
+  const musts = (d.requirements || []).filter(q => q.must_have);
+  const nices = (d.requirements || []).filter(q => !q.must_have);
+  if(musts.length){ h += "<h3>Required by the advert</h3>"; musts.forEach(q => h += reqRow(q)); }
+  if(nices.length){ h += "<h3>Preferred</h3>"; nices.forEach(q => h += reqRow(q)); }
+
+  if(d.gaps && d.gaps.length){
+    h += "<h3 class='b'>Your skills gap, worst first</h3>";
+    d.gaps.forEach(g => h += "<div class='pt'><span class='"
+      + (g.status === "missing" ? "b" : "") + "'>"
+      + (g.status === "missing" ? "&#10007; " : "&#126; ") + esc(g.requirement) + "</span>"
+      + "<span class='tag'>" + (g.must_have ? "must have" : "nice to have") + "</span>"
+      + (g.note ? "<span class='nt'>" + esc(g.note) + "</span>" : "") + "</div>");
+  }
+  if(d.transferable && d.transferable.length){
+    h += "<h3 class='g'>Strengths the advert did not ask for</h3>";
+    d.transferable.forEach(x => h += "<div class='pt g'>+ " + esc(x) + "</div>");
+  }
+  if(d.improvements && d.improvements.length){
+    h += "<h3>What would raise the score</h3>";
+    d.improvements.forEach(x => h += "<div class='pt'>&bull; " + esc(x) + "</div>");
+  }
+
+  const el = document.createElement("div");
+  el.className = "rev"; el.style.borderLeft = "4px solid " + hue; el.innerHTML = h;
+  $("cvout").appendChild(el);
+
+  const next = document.createElement("button");
+  next.textContent = "Interview me on the gaps"; next.style.marginTop = "12px";
+  next.onclick = () => {
+    // Walk the gap straight into practice: the must-haves it could not find are
+    // exactly what a real interviewer would dig at.
+    const gaps = (d.gaps || []).filter(g => g.must_have).map(g => g.requirement);
+    if(gaps.length && !$("focus").value.trim()) $("focus").value = gaps.slice(0, 3).join(", ");
+    $("cvout").innerHTML = ""; $("go").click();
+  };
+  $("cvout").appendChild(next);
+  scroll();
+}
 
 $("go").onclick = async () => {
   S.role = $("role").value.trim(); S.focus = $("focus").value.trim(); S.jd = $("jd").value.trim();

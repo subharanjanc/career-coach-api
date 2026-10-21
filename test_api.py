@@ -84,6 +84,62 @@ try:
 except ValueError as error:
     check("png is refused", "Unsupported" in str(error), str(error))
 
+# ----------------------------------------------------------- job fit, free
+r = client.post("/jobfit", json={"role": "AI Engineer", "job_description": "",
+                                 "cv_text": "x" * 500})
+check("job fit without an advert -> 422", r.status_code == 422, r.text)
+check("and says why", "advert" in r.text.lower(), r.text)
+
+r = client.post("/jobfit", json={"role": "AI Engineer", "job_description": "Python.",
+                                 "cv_text": "x" * 500})
+check("job fit with a one-line advert -> 422", r.status_code == 422, r.text)
+
+r = client.post("/jobfit", json={"role": "AI Engineer", "job_description": "y" * 300,
+                                 "cv_text": "too short"})
+check("job fit with a stub CV -> 422", r.status_code == 422, r.text)
+
+r = client.post("/jobfit", json={"role": "AI Engineer", "job_description": "y" * 9000,
+                                 "cv_text": "x" * 500})
+check("job fit with an over-long advert -> 422", r.status_code == 422, r.text)
+
+r = client.post("/jobfit/upload", files={"file": ("cv.txt", b"x" * 500, "text/plain")},
+                data={"role": "AI Engineer"})
+check("job fit upload without an advert -> 422", r.status_code == 422, r.text)
+
+check("health advertises the job fit mode",
+      "job fit" in client.get("/health").json().get("modes", []), client.get("/health").text)
+check("the page offers the job fit button", "Job-fit analysis" in client.get("/").text)
+
+# The score is arithmetic now, so it can be checked for free.
+from api.coach import Requirement, score_fit                # noqa: E402
+
+
+def req(must, status):
+    return Requirement(requirement="r", must_have=must, status=status)
+
+
+check("all requirements evidenced -> 10",
+      score_fit([req(True, "evidenced"), req(False, "evidenced")])["score"] == 10)
+check("nothing evidenced -> 1",
+      score_fit([req(True, "missing"), req(False, "missing")])["score"] == 1)
+check("no requirements -> no score", score_fit([])["score"] is None)
+
+capped = score_fit([req(True, "evidenced")] * 4 + [req(True, "missing")])
+check("a missing must-have caps the score at 7", capped["score"] == 7, capped["basis"])
+check("and the cap names what blocks it", capped["basis"]["blocking"] == ["r"], capped["basis"])
+check("the raw score before the cap is kept", capped["basis"]["raw_score"] > 7, capped["basis"])
+
+check("a partial match earns half of an evidenced one",
+      score_fit([req(True, "partial")])["basis"]["earned"] * 2
+      == score_fit([req(True, "evidenced")])["basis"]["earned"])
+check("a must-have outweighs a nice-to-have",
+      score_fit([req(True, "evidenced")])["basis"]["possible"]
+      > score_fit([req(False, "evidenced")])["basis"]["possible"])
+
+same = [req(True, "evidenced"), req(True, "partial"), req(False, "missing")]
+check("the same classification always scores the same",
+      score_fit(same) == score_fit(same))
+
 if "--live" not in sys.argv:
     print("\n%d passed, %d failed   (run with --live for a real interview)" % (passed, failed))
     sys.exit(1 if failed else 0)
@@ -113,6 +169,53 @@ if r.status_code == 200:
           d["missing_requirements"])
     print("       %d/10 | %d green, %d red | %s"
           % (d["match_score"], len(d["green"]), len(d["red"]), d["headline"][:90]))
+
+print("\nLive job fit (this costs money)")
+ADVERT = """AI Engineer (m/w/d), Dusseldorf.
+Dein Profil:
+- Mindestens 3 Jahre Berufserfahrung in Python (zwingend erforderlich)
+- Erfahrung mit LLM-APIs (zwingend erforderlich)
+- Sehr gute Deutschkenntnisse, mindestens C1 (zwingend erforderlich)
+- Erfahrung mit Docker von Vorteil
+"""
+
+r = client.post("/jobfit", json={"role": "AI Engineer", "job_description": ADVERT,
+                                 "cv_text": CV})
+check("job fit -> 200", r.status_code == 200, r.text)
+if r.status_code == 200:
+    d = r.json()
+    b = d["score_basis"]
+    check("score within 1-10", 1 <= d["match_score"] <= 10, d["match_score"])
+    check("requirements were extracted", len(d["requirements"]) >= 3, d["requirements"])
+    check("every requirement carries a status",
+          all(q["status"] in ("evidenced", "partial", "missing") for q in d["requirements"]))
+    check("an evidenced requirement quotes the CV",
+          all(q["evidence"] for q in d["requirements"] if q["status"] == "evidenced"),
+          [q for q in d["requirements"] if q["status"] == "evidenced" and not q["evidence"]])
+    check("a missing requirement quotes nothing",
+          all(not q["evidence"] for q in d["requirements"] if q["status"] == "missing"),
+          [q for q in d["requirements"] if q["status"] == "missing" and q["evidence"]])
+
+    # The number on screen must be the number the arithmetic produced.
+    raw = 1 + 9 * (b["earned"] / b["possible"])
+    expected = min(round(raw), 7) if b["blocking"] else round(raw)
+    check("the score recomputes from its own basis", d["match_score"] == expected,
+          "%s vs %s (earned %s of %s)" % (d["match_score"], expected, b["earned"], b["possible"]))
+    check("the basis counts every requirement",
+          b["must_have"]["total"] + b["nice_to_have"]["total"] == len(d["requirements"]), b)
+
+    # German B2 against a C1 requirement must not be waved through.
+    german = [q for q in d["requirements"] if "c1" in q["requirement"].lower()
+              or "deutsch" in q["requirement"].lower()]
+    check("the German C1 bar is not marked evidenced",
+          bool(german) and all(q["status"] != "evidenced" for q in german), german)
+    check("gaps are listed worst first",
+          [g["status"] for g in d["gaps"]] == sorted(
+              [g["status"] for g in d["gaps"]],
+              key=lambda st: st == "partial") if d["gaps"] else True, d["gaps"])
+    print("       %d/10 | %d requirements, %d gaps | earned %s of %s | %s"
+          % (d["match_score"], len(d["requirements"]), len(d["gaps"]),
+             b["earned"], b["possible"], d["headline"][:70]))
 
 print("\nLive interview (this costs money)")
 JD = ("Agentic AI Engineer. You will build LLM agents that call tools, own small services "

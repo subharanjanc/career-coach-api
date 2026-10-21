@@ -1,10 +1,11 @@
-# AI Career Coach — mock interview mode
+# AI Career Coach
 
 Mini-project, Ironhack AI Engineering FT Sept 26.
 Brief: `ironhack-rmt-AI-student-materials/project-brief-AI-powered-career-coach`
 
 Paste the job you are preparing for. It interviews you **one question at a time**,
-marks every answer out of 10, and scores the whole interview at the end.
+marks every answer out of 10, and scores the whole interview at the end. It also
+reviews your CV, and matches it against the advert requirement by requirement.
 
 ## Endpoints
 
@@ -16,6 +17,8 @@ marks every answer out of 10, and scores the whole interview at the end.
 | `POST` | `/finish` | The transcript → overall score, strengths, weaknesses, fixes |
 | `POST` | `/cv` | A pasted CV → match score, green points, red points |
 | `POST` | `/cv/upload` | A PDF, DOCX, TXT or MD file → the same review |
+| `POST` | `/jobfit` | A CV **and an advert** → every requirement judged, then scored |
+| `POST` | `/jobfit/upload` | A file + an advert → the same analysis |
 | `GET` | `/health` | Liveness, model, limits |
 
 ### `POST /answer`
@@ -119,6 +122,50 @@ The prompt forbids assuming experience that is not written down: an unevidenced
 requirement goes to `missing_requirements` rather than being charitably assumed.
 A reviewer that invents qualifications is worse than no reviewer.
 
+## Job fit and skills gap
+
+Bonus challenge 2 of the brief: compare the CV against a specific offer, name
+the relevant and missing skills, give a job-match score, suggest improvements.
+
+The CV reviewer already produced all four, but its `match_score` was a holistic
+judgement and drifted — 5, 5, 4, 5 across four identical requests. A score that
+moves on its own is not a measurement.
+
+So `/jobfit` splits the work. The model only **classifies**: it pulls each
+requirement out of the advert, marks it `must_have` or not, and judges it
+`evidenced` / `partial` / `missing` against the CV, quoting the CV as evidence.
+The **score is arithmetic**, computed in `score_fit()`:
+
+- a must-have is worth 3 points, a nice-to-have 1
+- evidenced earns full credit, partial a half, missing nothing
+- `score = 1 + 9 × earned / possible`, so the range is 1–10
+- while any must-have is outright missing the score is **capped at 7** — a CV is
+  not a strong fit for a job whose hard requirement it never mentions
+
+Every number is returned in `score_basis` and shown on the page, so the score can
+be recomputed by hand. A test asserts the returned score equals the one its own
+basis implies.
+
+### Does it actually hold still?
+
+Three identical runs against a German advert, after tightening the prompt so the
+advert is split the same way each time:
+
+| | requirements | weighted total | score |
+|---|---|---|---|
+| run 1 | 13 | 29 | 5 |
+| run 2 | 13 | 29 | 5 |
+| run 3 | 13 | 29 | 6 |
+
+The denominator and the blocking list are now stable; the score still moves by a
+point when a borderline requirement flips between `partial` and `evidenced`.
+That is honest: the spread is the same ±1 as before, but it is no longer
+unexplained — `score_basis` says exactly which requirement moved and what it was
+worth. Pinning it further would mean pretending a judgement call is not one.
+
+A fit analysis without an advert is refused rather than scored, because there is
+nothing to measure against. Use `/cv` for that.
+
 ## Brief status
 
 | Requirement | State |
@@ -126,7 +173,8 @@ A reviewer that invents qualifications is worse than no reviewer.
 | 1. Mock interview mode | done, deployed |
 | 2. CV reviewer mode | done, deployed |
 | 3. One app containing both | done |
-| Bonus challenges (5) | not started |
+| Bonus 2 — job fit & skills gap | done, not yet deployed |
+| Bonus 1, 3, 4, 5 | not started |
 
 ## Limits
 
