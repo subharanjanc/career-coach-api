@@ -316,7 +316,12 @@ def review_cv(role: str, job_description: str, cv_text: str) -> dict:
             "quick_wins are changes doable in under an hour - rewording, reordering, adding a "
             "number - not 'gain more experience'.\n"
             "If the advert lists a requirement the CV does not evidence, put it in "
-            "missing_requirements rather than guessing that the candidate has it."),
+            "missing_requirements rather than guessing that the candidate has it.\n\n"
+            "LANGUAGE. Write in the language of the job advert. If no advert was given, use "
+            "the language of the CV. Either way keep technical terms, tool names, job titles "
+            "and certifications in English - scikit-learn, Data Warehouse, Transfer Learning, "
+            "Scrum Master, B.Tech - exactly as a German hiring manager would write them. Do "
+            "not translate them, and do not switch language part-way through."),
         input=[{"role": "user", "content": f"CV:\n{cv_text}"}],
         text_format=CVReview)
     out = r.output_parsed.model_dump()
