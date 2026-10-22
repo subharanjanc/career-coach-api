@@ -6,10 +6,13 @@
     POST /finish    the transcript -> overall score and feedback
     POST /cv        a CV -> a review against the role, and the advert if given
     POST /jobfit    a CV + an advert -> requirement-by-requirement fit, scored
+    POST /judge     a review -> a second model's verdict on it
     GET  /health    liveness
 
 Stateless: the browser returns the transcript on every call.
 """
+
+import json
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
@@ -17,13 +20,15 @@ from openai import APITimeoutError
 from pydantic import BaseModel, Field
 
 try:
-    from .coach import (MAX_CV_CHARS, MAX_JD_CHARS, MAX_QUESTIONS, MIN_JD_FOR_FIT,
-                        MODEL, Turn, analyse_fit, extract_cv_text, final_feedback,
-                        first_question, next_question, review_cv)
+    from .coach import (CRITERIA, JUDGE_MODEL, MAX_CV_CHARS, MAX_JD_CHARS,
+                        MAX_QUESTIONS, MIN_JD_FOR_FIT, MODEL, Turn, analyse_fit,
+                        extract_cv_text, final_feedback, first_question,
+                        judge_review, next_question, review_cv)
 except ImportError:                                  # pragma: no cover
-    from coach import (MAX_CV_CHARS, MAX_JD_CHARS, MAX_QUESTIONS, MIN_JD_FOR_FIT,
-                       MODEL, Turn, analyse_fit, extract_cv_text, final_feedback,
-                       first_question, next_question, review_cv)
+    from coach import (CRITERIA, JUDGE_MODEL, MAX_CV_CHARS, MAX_JD_CHARS,
+                       MAX_QUESTIONS, MIN_JD_FOR_FIT, MODEL, Turn, analyse_fit,
+                       extract_cv_text, final_feedback, first_question,
+                       judge_review, next_question, review_cv)
 
 app = FastAPI(title="AI Career Coach & CV Evaluation", version="1.1.0",
               description="CV review, job-fit analysis and mock interview practice. "
@@ -54,6 +59,14 @@ class FitRequest(BaseModel):
     role: str = Field(..., description="Target job title")
     job_description: str = Field(..., description="The advert - required for a fit analysis")
     cv_text: str = Field(..., description="The CV as plain text")
+
+
+class JudgeRequest(BaseModel):
+    role: str = Field(default="", description="Target job title")
+    job_description: str = Field(default="", description="The advert it was written against")
+    cv_text: str = Field(..., description="The CV, as ground truth for the judge")
+    review: str = Field(..., description="The review being judged, as a JSON string")
+    kind: str = Field(default="cv review", description="'cv review' or 'job fit'")
 
 
 class FinishRequest(BaseModel):
@@ -132,13 +145,48 @@ async def jobfit_upload(file: UploadFile = File(...),
     return _guard(analyse_fit, role, job_description, text)
 
 
+def _parse_review(raw: str) -> dict:
+    try:
+        review = json.loads(raw)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=422, detail="The review could not be read as JSON.")
+    if not isinstance(review, dict):
+        raise HTTPException(status_code=422, detail="The review must be an object.")
+    return review
+
+
+@app.post("/judge")
+def judge(r: JudgeRequest):
+    """Have a second model grade a review it did not write."""
+    return _guard(judge_review, r.role, r.job_description, r.cv_text,
+                  _parse_review(r.review), r.kind)
+
+
+@app.post("/judge/upload")
+async def judge_upload(file: UploadFile = File(...),
+                       review: str = Form(...),
+                       role: str = Form(""),
+                       job_description: str = Form(""),
+                       kind: str = Form("cv review")):
+    """Same verdict, when the CV was uploaded rather than pasted."""
+    data = await file.read()
+    if len(data) > 4_000_000:
+        raise HTTPException(status_code=422, detail="That file is larger than 4 MB.")
+    try:
+        text = extract_cv_text(data, file.filename or "")
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+    return _guard(judge_review, role, job_description, text, _parse_review(review), kind)
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "model": MODEL, "max_questions": MAX_QUESTIONS,
             "max_job_description_chars": MAX_JD_CHARS,
             "max_cv_chars": MAX_CV_CHARS,
             "min_job_description_chars_for_fit": MIN_JD_FOR_FIT,
-            "modes": ["mock interview", "cv review", "job fit"]}
+            "judge_model": JUDGE_MODEL, "judge_criteria": list(CRITERIA),
+            "modes": ["mock interview", "cv review", "job fit", "llm as a judge"]}
 
 
 PAGE = """<!doctype html>
@@ -282,6 +330,19 @@ PAGE = """<!doctype html>
   .sum { font-size:12.5px; color:var(--muted); background:var(--card2);
          border-radius:8px; padding:9px 12px; margin:10px 0; line-height:1.65 }
   .sum b { color:var(--ink) }
+  /* Which model produced what is on screen, not buried in a response body. */
+  .mdl { display:inline-block; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+         font-size:10.5px; letter-spacing:.02em; padding:2px 7px; border-radius:5px;
+         background:rgba(43,110,242,.16); border:1px solid rgba(53,224,212,.35);
+         color:var(--turq); margin-left:7px; vertical-align:1px }
+  .mdl.judge { background:rgba(92,255,77,.10); border-color:rgba(92,255,77,.40);
+               color:var(--fluoro) }
+  .crit { display:flex; align-items:baseline; gap:10px; padding:8px 0;
+          border-bottom:1px solid var(--line) }
+  .crit:last-child { border-bottom:0 }
+  .crit .n { flex:0 0 42px; font-size:17px; font-weight:600; text-align:right }
+  .crit .t { font-weight:600; font-size:13.5px }
+  .crit .j { display:block; color:var(--muted); font-size:12.5px; margin-top:2px }
 </style></head><body>
 <div class="wrap">
   <h1 class="grad">AI Career Coach <span>&amp;</span> CV Evaluation</h1>
@@ -329,6 +390,7 @@ PAGE = """<!doctype html>
 
 <script>
 const S = { role:"", jd:"", focus:"", turns:[], asked:0, lastQ:"", spent:0, done:false };
+const JUDGE = """ + repr(JUDGE_MODEL) + """;
 const $ = id => document.getElementById(id);
 const log = $("log");
 
@@ -341,6 +403,10 @@ function bubble(who, text, mine){
 }
 function meta(t){
   const d = document.createElement("div"); d.className="meta"; d.textContent=t;
+  log.appendChild(d); scroll();
+}
+function metaHtml(html){
+  const d = document.createElement("div"); d.className="meta"; d.innerHTML=html;
   log.appendChild(d); scroll();
 }
 function scroll(){ window.scrollTo(0, document.body.scrollHeight); }
@@ -416,16 +482,18 @@ function reviewCard(d){
   const el = document.createElement("div");
   el.className = "rev"; el.style.borderLeft = "4px solid " + hue; el.innerHTML = h;
   $("cvout").appendChild(el);
+  el.innerHTML += "<div class='meta' style='margin-top:12px'>" + runStamp(d) + "</div>";
   const b = document.createElement("button");
   b.textContent = "Start the interview"; b.style.marginTop = "12px";
   b.onclick = () => { $("cvout").innerHTML = ""; $("go").click(); };
   $("cvout").appendChild(b);
+  addJudgeButton($("cvout"), d, "cv review");
   scroll();
 }
 
 // /cv and /jobfit take the same CV in the same two ways, so the
 // upload-or-paste dance lives here once instead of once per button.
-async function postCV(jsonPath, uploadPath){
+async function postCV(jsonPath, uploadPath, extra){
   const role = $("role").value.trim();
   if(!role) throw new Error("Tell it which role first.");
   const f = $("cvfile").files[0];
@@ -433,14 +501,31 @@ async function postCV(jsonPath, uploadPath){
   if(!f && !pasted) throw new Error("Upload a CV or paste the text.");
   const jd = $("jd").value.trim();
   if(f){
+    // The uploaded file is still in the input, so the judge re-sends it rather
+    // than the server echoing 20k characters of CV back for the round trip.
     const fd = new FormData();
     fd.append("file", f); fd.append("role", role); fd.append("job_description", jd);
+    for(const k in (extra || {})) fd.append(k, extra[k]);
     const r = await fetch(uploadPath, { method:"POST", body: fd });
     const d = await r.json();
     if(!r.ok) throw new Error(d.detail || ("HTTP " + r.status));
     return d;
   }
-  return await post(jsonPath, { role: role, job_description: jd, cv_text: pasted });
+  const body = { role: role, job_description: jd, cv_text: pasted };
+  for(const k in (extra || {})) body[k] = extra[k];
+  return await post(jsonPath, body);
+}
+
+// Which model did this, as a badge. The judge gets its own colour because the
+// whole point is that it is NOT the model that wrote the thing being judged.
+function mdl(name, isJudge){
+  return "<span class='mdl" + (isJudge ? " judge" : "") + "'>" + esc(name || "?") + "</span>";
+}
+
+function runStamp(d){
+  return mdl(d.model) + "<span class='mdl' style='border-color:var(--line);"
+       + "background:transparent;color:var(--muted)'>" + d.seconds + "s &middot; $"
+       + (d.estimated_cost_usd || 0).toFixed(5) + "</span>";
 }
 
 const MODES = ["review", "fit", "go"];
@@ -571,6 +656,8 @@ function fitCard(d){
     d.improvements.forEach(x => h += "<div class='pt'>&bull; " + esc(x) + "</div>");
   }
 
+  h += "<div class='meta' style='margin-top:12px'>" + runStamp(d) + "</div>";
+
   const el = document.createElement("div");
   el.className = "rev"; el.style.borderLeft = "4px solid " + hue; el.innerHTML = h;
   $("cvout").appendChild(el);
@@ -585,7 +672,64 @@ function fitCard(d){
     $("cvout").innerHTML = ""; $("go").click();
   };
   $("cvout").appendChild(next);
+  addJudgeButton($("cvout"), d, "job fit");
   scroll();
+}
+
+function judgeCard(d, host){
+  const sc = d.overall;
+  const hue = sc >= 7 ? "var(--good)" : (sc >= 5 ? "var(--warn)" : "var(--bad)");
+  let h = "<div class='who grad'>second opinion</div>";
+  h += "<div style='margin-bottom:8px'>" + mdl(d.model, true)
+     + " judging what " + mdl(d.judged_model) + " wrote</div>";
+  h += "<div class='big grad' style='" + scoreGrad(Math.round(sc)) + "'>" + sc + "/10</div>";
+  h += "<div style='margin-bottom:6px'>" + esc(d.headline) + "</div>";
+  h += "<div class='sum'>The mean of the " + d.criteria_counted
+     + " criteria below, not a figure the judge was asked for.</div>";
+
+  (d.criteria || []).forEach(c => {
+    const ch = c.score >= 7 ? "var(--good)" : (c.score >= 5 ? "var(--warn)" : "var(--bad)");
+    h += "<div class='crit'><div class='n' style='color:" + ch + "'>" + c.score + "</div>"
+       + "<div><span class='t'>" + esc(c.criterion) + "</span>"
+       + "<span class='j'>" + esc(c.justification) + "</span></div></div>";
+  });
+
+  if(d.unsupported_claims && d.unsupported_claims.length){
+    h += "<h3 class='b grad'>Claims the CV does not support</h3>";
+    d.unsupported_claims.forEach(u => h += "<div class='pt'><span class='b'>&#10007; "
+      + esc(u.claim) + "</span><span class='nt'>" + esc(u.problem) + "</span></div>");
+  } else {
+    h += "<h3 class='g grad'>Nothing invented</h3>"
+       + "<div class='pt g'>Every claim it checked was supported by the CV.</div>";
+  }
+  if(d.missed && d.missed.length){
+    h += "<h3 class='grad'>In the CV, and the review never mentioned it</h3>";
+    d.missed.forEach(x => h += "<div class='pt'>&bull; " + esc(x) + "</div>");
+  }
+  h += "<div class='meta' style='margin-top:12px'>" + runStamp(d) + "</div>";
+
+  const el = document.createElement("div");
+  el.className = "rev"; el.style.borderLeft = "4px solid " + hue; el.innerHTML = h;
+  host.appendChild(el);
+  scroll();
+}
+
+// Hand the review we are looking at to a different model and ask what it thinks.
+function addJudgeButton(host, review, kind){
+  const b = document.createElement("button");
+  b.className = "ghost";
+  b.style.marginTop = "12px"; b.style.marginLeft = "8px";
+  b.textContent = "Have " + JUDGE + " judge this";
+  b.onclick = async () => {
+    b.disabled = true;
+    const stop = waiting("a second model is checking that review against your CV...");
+    try{
+      const d = await postCV("/judge", "/judge/upload",
+                             { review: JSON.stringify(review), kind: kind });
+      stop(); S.spent += d.estimated_cost_usd; judgeCard(d, host);
+    }catch(e){ stop(); bubble("error", e.message); b.disabled = false; }
+  };
+  host.appendChild(b);
 }
 
 $("go").onclick = async () => {
@@ -600,7 +744,7 @@ $("go").onclick = async () => {
     $("bar").classList.remove("hidden");
     S.lastQ = d.question; S.asked = d.asked; S.spent += d.estimated_cost_usd;
     bubble("interviewer", d.question);
-    meta("question " + d.asked + " of """ + str(MAX_QUESTIONS) + """ \\u00b7 $" + S.spent.toFixed(5));
+    metaHtml("question " + d.asked + " of """ + str(MAX_QUESTIONS) + """ " + runStamp(d));
     $("ans").focus();
   }catch(e){ stop(); $("go").disabled=false; bubble("error", e.message); }
 };
@@ -622,7 +766,7 @@ $("send").onclick = async () => {
     else {
       S.lastQ = d.question; S.asked = d.asked;
       bubble("interviewer", d.question);
-      meta("question " + d.asked + " of """ + str(MAX_QUESTIONS) + """ \\u00b7 $" + S.spent.toFixed(5));
+      metaHtml("question " + d.asked + " of """ + str(MAX_QUESTIONS) + """ " + runStamp(d));
     }
   }catch(e){ stop(); bubble("error", e.message); }
   $("send").disabled = false; $("fin").disabled = false; $("ans").focus();
@@ -668,7 +812,9 @@ async function finish(){
       h += "<div class='fix'>Would pass a first screen: " + (f.would_pass_screen ? "yes" : "not yet") + "</div>"; }
     const d2 = document.createElement("div"); d2.className = "msg"; d2.innerHTML = h;
     log.appendChild(d2);
-    meta(d.questions_answered + " answers \\u00b7 $" + S.spent.toFixed(5) + " total");
+    metaHtml(d.questions_answered + " answers " + runStamp(d)
+           + "<span class='mdl' style='border-color:var(--line);background:transparent;"
+           + "color:var(--muted)'>$" + S.spent.toFixed(5) + " this session</span>");
     readyForNextRun();
   }catch(e){ stop(); S.done = false; $("send").disabled=false; $("fin").disabled=false;
              bubble("error", e.message); }

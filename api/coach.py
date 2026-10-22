@@ -118,7 +118,7 @@ def first_question(role: str, job_description: str, focus: str) -> dict:
         model=MODEL, max_output_tokens=600,
         instructions=interview_system(role, jd, focus, 0),
         input=[{"role": "user", "content": "Start the interview with your first question."}])
-    return {"question": (r.output_text or "").strip(), "asked": 1,
+    return {"question": (r.output_text or "").strip(), "asked": 1, "model": MODEL,
             "seconds": round(time.perf_counter() - started, 1),
             "estimated_cost_usd": _cost([_usage(r)])}
 
@@ -191,7 +191,7 @@ def next_question(role: str, job_description: str, focus: str,
             question_text = (r.output_text or "").strip()
             parts.append(_usage(r))
 
-    return {"question": question_text, "answer_score": scored,
+    return {"question": question_text, "answer_score": scored, "model": MODEL,
             "asked": asked if last else asked + 1, "done": last,
             "seconds": round(time.perf_counter() - started, 1),
             "estimated_cost_usd": _cost(parts)}
@@ -211,7 +211,7 @@ def final_feedback(role: str, turns: list[Turn]) -> dict:
             "be concrete - never 'practise more'."),
         input=[{"role": "user", "content": transcript_text(turns)}],
         text_format=InterviewFeedback)
-    return {"feedback": r.output_parsed.model_dump(),
+    return {"feedback": r.output_parsed.model_dump(), "model": MODEL,
             "questions_answered": len(turns),
             "seconds": round(time.perf_counter() - started, 1),
             "estimated_cost_usd": _cost([_usage(r)])}
@@ -327,6 +327,7 @@ def review_cv(role: str, job_description: str, cv_text: str) -> dict:
         input=[{"role": "user", "content": f"CV:\n{cv_text}"}],
         text_format=CVReview)
     out = r.output_parsed.model_dump()
+    out["model"] = MODEL
     out["seconds"] = round(time.perf_counter() - started, 1)
     out["estimated_cost_usd"] = _cost([_usage(r)])
     out["cv_chars"] = len(cv_text)
@@ -484,7 +485,152 @@ def analyse_fit(role: str, job_description: str, cv_text: str) -> dict:
                    for q in sorted(analysis.requirements,
                                    key=lambda q: (q.status == "partial", not q.must_have))
                    if q.status in ("missing", "partial")]
+    out["model"] = MODEL
     out["seconds"] = round(time.perf_counter() - started, 1)
     out["estimated_cost_usd"] = _cost([_usage(r)])
     out["cv_chars"] = len(cv_text)
+    return out
+
+
+# ------------------------------------------------------------ llm as a judge
+# Bonus 5. A second model grades the first model's work against the brief's
+# criteria. It runs on a DIFFERENT model on purpose: a model marking its own
+# homework agrees with itself, and the one failure worth catching here -
+# a review asserting something the CV never said - is exactly the failure the
+# author is blind to.
+#
+# The judge is given the CV as ground truth and told not to re-review it. Its
+# job is to check the review against the CV, not to have opinions about the
+# candidate.
+
+JUDGE_MODEL = "gpt-6-astra"
+CRITERIA = ("factual accuracy", "relevance", "actionability", "completeness")
+
+
+class CriterionScore(BaseModel):
+    criterion: Literal["factual accuracy", "relevance", "actionability", "completeness"]
+    score: int = Field(ge=1, le=10, description="1 poor, 10 excellent, for THIS criterion")
+    justification: str = Field(
+        description="Why that score, quoting the review's own words")
+
+
+class UnsupportedClaim(BaseModel):
+    claim: str = Field(description="What the review asserted, quoted from it")
+    problem: str = Field(description="What the CV actually says, or that it says nothing")
+
+
+class JudgeVerdict(BaseModel):
+    criteria: list[CriterionScore] = Field(
+        description="One entry per criterion, all four, in the order given")
+    unsupported_claims: list[UnsupportedClaim] = Field(
+        default_factory=list,
+        description="Review statements the CV does not support. Empty if none.")
+    missed: list[str] = Field(
+        default_factory=list,
+        description="Things in the CV that mattered and the review never mentioned")
+    headline: str = Field(description="One sentence on whether this review was worth having")
+
+
+def review_as_text(kind: str, review: dict) -> str:
+    """Flatten a review into something a judge can read line by line.
+
+    The server does this rather than the browser so the judge always sees the
+    same shape, whoever called it.
+    """
+    out = []
+    if kind == "job fit":
+        out.append(f"MATCH SCORE: {review.get('match_score')}/10")
+        out.append(f"HEADLINE: {review.get('headline', '')}")
+        for q in review.get("requirements", []):
+            line = (f"- [{q.get('status')}] {q.get('requirement')} "
+                    f"({'must have' if q.get('must_have') else 'nice to have'})")
+            if q.get("evidence"):
+                line += f"\n    evidence quoted from CV: {q['evidence']}"
+            if q.get("note"):
+                line += f"\n    note: {q['note']}"
+            out.append(line)
+        for x in review.get("transferable", []):
+            out.append(f"- transferable strength claimed: {x}")
+        for x in review.get("improvements", []):
+            out.append(f"- improvement suggested: {x}")
+    else:
+        out.append(f"MATCH SCORE: {review.get('match_score')}/10")
+        out.append(f"HEADLINE: {review.get('headline', '')}")
+        for p in review.get("green", []):
+            out.append(f"- GREEN [{p.get('dimension')}] {p.get('point')}")
+        for p in review.get("red", []):
+            out.append(f"- RED [{p.get('dimension')}] {p.get('point')}")
+        for x in review.get("evidenced_requirements", []):
+            out.append(f"- claimed evidenced by the CV: {x}")
+        for x in review.get("missing_requirements", []):
+            out.append(f"- claimed missing from the CV: {x}")
+        for x in review.get("quick_wins", []):
+            out.append(f"- quick win suggested: {x}")
+    return "\n".join(out)
+
+
+def judge_review(role: str, job_description: str, cv_text: str,
+                 review: dict, kind: str = "cv review") -> dict:
+    """Have a second model grade a review against the brief's four criteria."""
+    role = (role or "").strip() or "the advertised"
+    cv_text = (cv_text or "").strip()
+    if len(cv_text) < 120:
+        raise ValueError("The judge needs the CV it is checking against.")
+    if len(cv_text) > MAX_CV_CHARS:
+        raise ValueError(f"The CV must be at most {MAX_CV_CHARS:,} characters.")
+    if not isinstance(review, dict) or not review:
+        raise ValueError("There is no review to judge. Run a review first.")
+
+    body = review_as_text(kind, review)
+    if len(body) < 40:
+        raise ValueError("That review is empty - there is nothing to judge.")
+    jd = (job_description or "").strip()[:MAX_JD_CHARS]
+    advert = f"\nTHE ADVERT IT WAS WRITTEN AGAINST:\n---\n{jd}\n---\n" if jd else ""
+
+    started = time.perf_counter()
+    r = get_client(timeout=55.0).responses.parse(
+        model=JUDGE_MODEL,
+        instructions=(
+            f"Another model wrote the {kind} below, for a {role} role. You are grading "
+            "THAT WRITE-UP. You are not reviewing the candidate and you are not writing a "
+            "better review - say nothing about whether they should get the job.\n\n"
+            "The CV is given to you as ground truth. Check what the review says against "
+            "what the CV actually says.\n\n"
+            "Score each of these four, 1-10, quoting the review in every justification:\n"
+            "- factual accuracy: is every claim about the CV true of the CV? A review that "
+            "credits experience the CV never states, or reports something as absent that is "
+            "plainly written there, fails this however well it reads.\n"
+            "- relevance: does it address this role and this advert, or could it have been "
+            "written about any candidate for any job?\n"
+            "- actionability: could the candidate sit down and act on it today? 'Add a "
+            "number to the Telefonica bullet' is actionable; 'strengthen your profile' is "
+            "not.\n"
+            "- completeness: does it cover what mattered in this CV, or leave obvious "
+            "ground untouched?\n\n"
+            "`unsupported_claims` is the important one. Quote any statement the CV does not "
+            "support and say what the CV actually says instead. Leave it empty if there are "
+            "none - do not invent a fault to look thorough.\n\n"
+            "`missed` is what the CV contained, mattered for this role, and the review never "
+            "mentioned.\n\n"
+            "Judge only against the CV and the advert given. Do not use what you happen to "
+            "know about the person, the companies or the technologies."
+            + advert),
+        input=[{"role": "user",
+                "content": f"THE CV (ground truth):\n{cv_text}\n\n"
+                           f"THE {kind.upper()} BEING JUDGED:\n{body}"}],
+        text_format=JudgeVerdict)
+
+    verdict = r.output_parsed
+    out = verdict.model_dump()
+    # Averaged, not asked for - same reason the job-fit score is computed. A
+    # model asked for an overall alongside four parts tends to pick the overall
+    # first and bend the parts to fit it.
+    scores = [c.score for c in verdict.criteria]
+    out["overall"] = round(sum(scores) / len(scores), 1) if scores else None
+    out["criteria_counted"] = len(scores)
+    out["judged_model"] = MODEL
+    out["model"] = JUDGE_MODEL
+    out["kind"] = kind
+    out["seconds"] = round(time.perf_counter() - started, 1)
+    out["estimated_cost_usd"] = _cost([_usage(r)])
     return out

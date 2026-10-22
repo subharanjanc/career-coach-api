@@ -1,5 +1,6 @@
 """Local checks. `python test_api.py` is free; `--live` runs a real interview."""
 
+import json
 import sys
 from pathlib import Path
 
@@ -140,6 +141,50 @@ same = [req(True, "evidenced"), req(True, "partial"), req(False, "missing")]
 check("the same classification always scores the same",
       score_fit(same) == score_fit(same))
 
+# -------------------------------------------------------- llm as judge, free
+from api.coach import JUDGE_MODEL, MODEL                   # noqa: E402
+
+check("the judge runs on a different model than the work",
+      JUDGE_MODEL != MODEL, "%s vs %s" % (JUDGE_MODEL, MODEL))
+
+h = client.get("/health").json()
+check("health names the judge model", h.get("judge_model") == JUDGE_MODEL, h)
+check("health lists the four criteria", len(h.get("judge_criteria", [])) == 4, h)
+check("health lists the judge mode", "llm as a judge" in h.get("modes", []), h)
+
+r = client.post("/judge", json={"cv_text": "x" * 500, "review": "not json"})
+check("a review that is not JSON -> 422", r.status_code == 422, r.text)
+
+r = client.post("/judge", json={"cv_text": "x" * 500, "review": "[1,2,3]"})
+check("a review that is not an object -> 422", r.status_code == 422, r.text)
+
+r = client.post("/judge", json={"cv_text": "x" * 500, "review": "{}"})
+check("an empty review -> 422", r.status_code == 422, r.text)
+
+r = client.post("/judge", json={"cv_text": "short", "review": '{"headline":"x"}'})
+check("judging without the CV -> 422", r.status_code == 422, r.text)
+
+r = client.post("/judge", json={"cv_text": "x" * 500})
+check("no review at all -> 422", r.status_code == 422, r.text)
+
+from api.coach import review_as_text                        # noqa: E402
+
+flat = review_as_text("cv review", {"match_score": 7, "headline": "h",
+                                    "green": [{"dimension": "content", "point": "p"}],
+                                    "red": [], "evidenced_requirements": ["Python"],
+                                    "missing_requirements": [], "quick_wins": []})
+check("a review flattens to something readable",
+      "7/10" in flat and "GREEN [content] p" in flat, flat)
+check("job fit flattens too",
+      "[evidenced]" in review_as_text("job fit", {
+          "match_score": 6, "headline": "h",
+          "requirements": [{"requirement": "Python", "must_have": True,
+                            "status": "evidenced", "evidence": "five years",
+                            "note": None}]}))
+check("the page offers the judge",
+      '"Have " + JUDGE + " judge this"' in client.get("/").text)
+check("the page names the judge model", "gpt-6-astra" in client.get("/").text)
+
 if "--live" not in sys.argv:
     print("\n%d passed, %d failed   (run with --live for a real interview)" % (passed, failed))
     sys.exit(1 if failed else 0)
@@ -216,6 +261,49 @@ if r.status_code == 200:
     print("       %d/10 | %d requirements, %d gaps | earned %s of %s | %s"
           % (d["match_score"], len(d["requirements"]), len(d["gaps"]),
              b["earned"], b["possible"], d["headline"][:70]))
+
+print("\nLive judge (this costs money)")
+# Every claim in this review is absent from CV above. A judge worth having
+# says so; one that hands out sevens does not.
+INVENTED = {
+    "match_score": 9,
+    "headline": "An outstanding fit with everything the advert asks for.",
+    "green": [
+        {"dimension": "relevant skills",
+         "point": "Holds a Master's degree in Computer Science, exactly as required."},
+        {"dimension": "relevant skills", "point": "German at C1 level."},
+        {"dimension": "content", "point": "Six years of production Kubernetes at Telefonica."},
+    ],
+    "red": [{"dimension": "formatting", "point": "Could use more white space."}],
+    "evidenced_requirements": ["German C1", "Master's degree", "Kubernetes"],
+    "missing_requirements": [],
+    "quick_wins": ["Lead with the Master's degree."],
+}
+JD = "AI Engineer. Required: Python, LLM APIs, German C1, a Master's degree."
+
+r = client.post("/judge", json={"role": "AI Engineer", "job_description": JD,
+                                "cv_text": CV, "review": json.dumps(INVENTED),
+                                "kind": "cv review"})
+check("judging a fabricated review -> 200", r.status_code == 200, r.text)
+if r.status_code == 200:
+    v = r.json()
+    check("the verdict comes from the judge model", v["model"] == JUDGE_MODEL, v["model"])
+    check("and says whose work it judged", v["judged_model"] == MODEL, v["judged_model"])
+    check("all four criteria scored", len(v["criteria"]) == 4, v["criteria"])
+    check("every criterion is justified",
+          all(c["justification"].strip() for c in v["criteria"]))
+    check("overall is the mean of the four, not a separate opinion",
+          abs(v["overall"] - sum(c["score"] for c in v["criteria"]) / 4) < 0.06, v["overall"])
+    check("the invented qualifications are caught",
+          len(v["unsupported_claims"]) >= 2, v["unsupported_claims"])
+    check("the German C1 fabrication specifically is caught",
+          any("c1" in (u["claim"] + u["problem"]).lower() for u in v["unsupported_claims"]),
+          v["unsupported_claims"])
+    acc = [c["score"] for c in v["criteria"] if c["criterion"] == "factual accuracy"][0]
+    check("factual accuracy is scored low for a review that invents things",
+          acc <= 4, acc)
+    print("       %s/10 overall | %d unsupported claims | factual accuracy %d/10 | %.0fs"
+          % (v["overall"], len(v["unsupported_claims"]), acc, v["seconds"]))
 
 print("\nLive interview (this costs money)")
 JD = ("Agentic AI Engineer. You will build LLM agents that call tools, own small services "

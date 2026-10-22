@@ -19,6 +19,8 @@ reviews your CV, and matches it against the advert requirement by requirement.
 | `POST` | `/cv/upload` | A PDF, DOCX, TXT or MD file → the same review |
 | `POST` | `/jobfit` | A CV **and an advert** → every requirement judged, then scored |
 | `POST` | `/jobfit/upload` | A file + an advert → the same analysis |
+| `POST` | `/judge` | A review → a second model's verdict on it |
+| `POST` | `/judge/upload` | The same, when the CV was a file |
 | `GET` | `/health` | Liveness, model, limits |
 
 ### `POST /answer`
@@ -166,6 +168,47 @@ worth. Pinning it further would mean pretending a judgement call is not one.
 A fit analysis without an advert is refused rather than scored, because there is
 nothing to measure against. Use `/cv` for that.
 
+## LLM as a judge
+
+Bonus challenge 5: a model assesses the CV reviews against factual accuracy,
+relevance, actionability and completeness, returning structured scores and
+justifications.
+
+It runs on **a different model on purpose**. `gpt-6-luna` does the work;
+`gpt-6-astra` grades it. A model marking its own homework agrees with itself,
+and the failure worth catching here — a review asserting something the CV never
+said — is exactly the one its author is blind to.
+
+The judge is handed the CV as ground truth and told it is grading the write-up,
+not the candidate. `overall` is the mean of the four criteria rather than a
+fifth number the judge was asked for: a model asked for an overall alongside its
+parts tends to pick the overall first and bend the parts to fit.
+
+### Does it discriminate, or just hand out sevens?
+
+Three reviews of the same CV, judged by `gpt-6-astra`:
+
+| Review | Overall | Factual accuracy | Unsupported claims caught |
+|---|---|---|---|
+| Genuine, written by `gpt-6-luna` | 9.2 | 10/10 | none |
+| Fabricated — invents a Master's, German C1, six years of Kubernetes | 2.2 | 1/10 | **8** |
+| True but useless — "improve the profile", "could be stronger" | 4.0 | 10/10 | none |
+
+The third row is the one that shows the criteria are doing separate work. That
+review is not wrong about anything, so factual accuracy is 10/10 — and
+actionability is 1/10, which is why it still lands at 4.
+
+On the fabricated review it quoted the claim and the contradiction: *"German at
+C1 level, so the language bar is cleared"* against *"The CV explicitly states
+German B2, not C1."* The genuine review drew no false accusations.
+
+## Which model did what
+
+Every response carries the model that produced it, and every card on the page
+prints it. With two models in play, a verdict means very different things
+depending on whether it came from the model that wrote the thing being judged —
+so the page names both: *"gpt-6-astra judging what gpt-6-luna wrote"*.
+
 ## Brief status
 
 | Requirement | State |
@@ -177,7 +220,7 @@ nothing to measure against. Use `/cv` for that.
 | Bonus 1 — job search & discovery | not started |
 | Bonus 3 — personalised learning roadmap | not started |
 | Bonus 4 — company-specific interview prep | not started |
-| Bonus 5 — LLM-as-a-judge evaluation | not started |
+| Bonus 5 — LLM-as-a-judge evaluation | done, deployed |
 
 ## Limits
 
