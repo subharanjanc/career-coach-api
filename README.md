@@ -173,8 +173,11 @@ nothing to measure against. Use `/cv` for that.
 | 1. Mock interview mode | done, deployed |
 | 2. CV reviewer mode | done, deployed |
 | 3. One app containing both | done |
-| Bonus 2 — job fit & skills gap | done, not yet deployed |
-| Bonus 1, 3, 4, 5 | not started |
+| Bonus 2 — job fit & skills gap | done, deployed |
+| Bonus 1 — job search & discovery | not started |
+| Bonus 3 — personalised learning roadmap | not started |
+| Bonus 4 — company-specific interview prep | not started |
+| Bonus 5 — LLM-as-a-judge evaluation | not started |
 
 ## Limits
 
