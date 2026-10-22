@@ -160,16 +160,22 @@ PAGE = """<!doctype html>
   body { margin:0; background:var(--bg); color:var(--ink);
          font:16px/1.6 system-ui,sans-serif }
   .wrap { max-width:780px; margin:0 auto; padding:26px 16px 140px }
+  /* Shaded text, the way the title is done. Each user supplies its own
+     gradient; this only does the clipping. */
+  .grad { -webkit-background-clip:text; background-clip:text;
+          color:transparent; -webkit-text-fill-color:transparent;
+          width:fit-content }
   h1 { font-size:27px; font-weight:700; letter-spacing:-.01em; margin:0 0 6px;
-       background:linear-gradient(95deg, var(--peacock2) 0%, var(--royal) 32%,
-                  var(--turq) 66%, var(--fluoro) 100%);
-       -webkit-background-clip:text; background-clip:text; color:transparent;
-       width:fit-content }
+       background-image:linear-gradient(95deg, var(--peacock2) 0%, var(--royal) 32%,
+                        var(--turq) 66%, var(--fluoro) 100%) }
   h1 span { color:var(--fluoro); -webkit-text-fill-color:var(--fluoro) }
   .sub { color:var(--muted); font-size:13.5px; margin-bottom:20px }
   label { display:block; font-size:12px; color:var(--muted); text-transform:uppercase;
           letter-spacing:.06em; margin:14px 0 5px }
-  label.must { color:var(--fluoro) }
+  label.must { background-image:linear-gradient(90deg, var(--turq), var(--fluoro) 70%) }
+  /* The badges sit inside a gradient label, so they restate their own fill or
+     they inherit the transparent one and vanish. */
+  label .need, label .opt { -webkit-text-fill-color:initial }
   label .need, label .opt { font-size:9.5px; letter-spacing:.05em; padding:1px 6px;
           border-radius:4px; margin-left:8px; text-transform:uppercase }
   label .need { background:rgba(92,255,77,.12); color:var(--fluoro);
@@ -179,7 +185,8 @@ PAGE = """<!doctype html>
   /* A mandatory field you left empty, in the same green as its label. */
   .glow { border-color:var(--fluoro) !important;
           box-shadow:0 0 0 3px rgba(92,255,77,.22), 0 0 18px rgba(92,255,77,.28) !important }
-  .hint { font-size:12.5px; color:var(--fluoro); margin:10px 0 0; min-height:17px }
+  .hint { font-size:12.5px; margin:10px 0 0; min-height:17px; color:var(--fluoro);
+          background-image:linear-gradient(90deg, var(--turq), var(--fluoro) 60%) }
   input, textarea { width:100%; padding:11px 13px; border:1px solid var(--line);
          border-radius:9px; background:var(--card); color:var(--ink);
          font:15px/1.5 system-ui,sans-serif; resize:vertical }
@@ -205,8 +212,9 @@ PAGE = """<!doctype html>
   .msg { background:var(--card); border:1px solid var(--line); border-radius:12px;
          padding:13px 16px; margin:8px 0; white-space:pre-wrap; overflow-wrap:anywhere }
   .me { background:transparent; border:1px dashed var(--accent) }
-  .who { font-size:11px; color:var(--muted); text-transform:uppercase;
-         letter-spacing:.06em; margin-bottom:5px }
+  .who { font-size:11px; text-transform:uppercase; letter-spacing:.06em;
+         margin-bottom:5px; color:var(--muted);
+         background-image:linear-gradient(90deg, var(--peacock2), var(--turq)) }
   .card { border:1px solid var(--line); border-left:4px solid var(--warn);
           border-radius:10px; padding:11px 14px; margin:8px 0; background:var(--card2);
           font-size:14px }
@@ -224,7 +232,11 @@ PAGE = """<!doctype html>
   .big { font-size:30px; font-weight:600 }
   .rev { border:1px solid var(--line); border-radius:12px; padding:14px 16px; margin:10px 0;
          background:var(--card); animation:land .9s ease-out }
-  .rev h3 { font-size:14px; margin:12px 0 6px; font-weight:600 }
+  .rev h3 { font-size:14px; margin:12px 0 6px; font-weight:600;
+            background-image:linear-gradient(92deg, var(--peacock2), var(--royal) 55%,
+                             var(--turq)) }
+  .rev h3.g { background-image:linear-gradient(92deg, var(--turq), var(--fluoro) 75%) }
+  .rev h3.b { background-image:linear-gradient(92deg, var(--bad), var(--warn) 85%) }
   .pt { margin:4px 0; font-size:14px; line-height:1.5 }
   .pt .dim { font-size:11px; text-transform:uppercase; letter-spacing:.05em;
              color:var(--muted); margin-right:6px }
@@ -251,26 +263,26 @@ PAGE = """<!doctype html>
   .sum b { color:var(--ink) }
 </style></head><body>
 <div class="wrap">
-  <h1>AI Career Coach<span>.</span></h1>
+  <h1 class="grad">AI Career Coach<span>.</span></h1>
   <div class="sub">Paste the job you are preparing for. It interviews you one question at a
     time, marks every answer, and scores the whole thing at the end. Or have your CV
     reviewed, or matched against the advert requirement by requirement.</div>
 
   <div id="setup">
-    <label for="role" class="must">Role you are preparing for
+    <label for="role" class="must grad">Role you are preparing for
       <span class="need">required for all three</span></label>
     <input id="role" placeholder="Agentic AI Engineer">
     <label for="focus">What should it press you on?
       <span class="opt">optional</span></label>
     <input id="focus" placeholder="tool calling, system design">
-    <label for="jd" class="must">Job description
+    <label for="jd" class="must grad">Job description
       <span class="need">required for job-fit</span>
       <span class="opt">sharpens the other two</span></label>
     <textarea id="jd" placeholder="Paste the advert here..."></textarea>
-    <label for="cvfile" class="must">Your CV &mdash; upload (PDF, DOCX, TXT)
+    <label for="cvfile" class="must grad">Your CV &mdash; upload (PDF, DOCX, TXT)
       <span class="need">required for CV review and job-fit</span></label>
     <input id="cvfile" type="file" accept=".pdf,.docx,.txt,.md">
-    <label for="cvtext" class="must">&hellip;or paste it instead
+    <label for="cvtext" class="must grad">&hellip;or paste it instead
       <span class="opt">whichever you prefer</span></label>
     <textarea id="cvtext" placeholder="Paste your CV text here..."></textarea>
 
@@ -302,7 +314,7 @@ function esc(t){ return (t||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").repla
 function bubble(who, text, mine){
   const d = document.createElement("div");
   d.className = "msg" + (mine ? " me" : "");
-  d.innerHTML = "<div class='who'>" + who + "</div>" + esc(text);
+  d.innerHTML = "<div class='who grad'>" + who + "</div>" + esc(text);
   log.appendChild(d); scroll(); return d;
 }
 function meta(t){
@@ -310,6 +322,17 @@ function meta(t){
   log.appendChild(d); scroll();
 }
 function scroll(){ window.scrollTo(0, document.body.scrollHeight); }
+
+// A score as shades rather than one flat colour, keeping the hot/cold reading:
+// strong runs turquoise into green, middling amber into turquoise, weak pink
+// into amber. Inline `color` cannot be used here - the transparent text fill
+// of .grad would override it and the band would be lost.
+function scoreGrad(n){
+  const pair = n >= 7 ? ["var(--turq)", "var(--fluoro)"]
+             : n >= 5 ? ["var(--warn)", "var(--turq)"]
+             :          ["var(--bad)",  "var(--warn)"];
+  return "background-image:linear-gradient(92deg," + pair[0] + "," + pair[1] + ")";
+}
 
 function scoreCard(a){
   if(!a) return;
@@ -343,28 +366,29 @@ function waiting(text){
 
 function reviewCard(d){
   const hue = d.match_score >= 7 ? "var(--good)" : (d.match_score >= 5 ? "var(--warn)" : "var(--bad)");
-  let h = "<div class='who'>cv review</div>";
-  h += "<div class='big' style='color:" + hue + "'>" + d.match_score + "/10</div>";
+  let h = "<div class='who grad'>cv review</div>";
+  h += "<div class='big grad' style='" + scoreGrad(d.match_score) + "'>"
+     + d.match_score + "/10</div>";
   h += "<div style='margin-bottom:8px'>" + esc(d.headline) + "</div>";
 
   if(d.green.length){
-    h += "<h3 class='g'>What works</h3>";
+    h += "<h3 class='g grad'>What works</h3>";
     d.green.forEach(p => h += "<div class='pt g'><span class='dim'>" + esc(p.dimension)
                            + "</span>" + esc(p.point) + "</div>");
   }
   if(d.red.length){
-    h += "<h3 class='b'>What needs improving</h3>";
+    h += "<h3 class='b grad'>What needs improving</h3>";
     d.red.forEach(p => h += "<div class='pt b'><span class='dim'>" + esc(p.dimension)
                           + "</span>" + esc(p.point) + "</div>");
   }
   if(d.evidenced_requirements.length || d.missing_requirements.length){
-    h += "<h3>Against the advert</h3><div>";
+    h += "<h3 class='grad'>Against the advert</h3><div>";
     d.evidenced_requirements.forEach(x => h += "<span class='pill ok'>&#10003; " + esc(x) + "</span>");
     d.missing_requirements.forEach(x => h += "<span class='pill no'>&#10007; " + esc(x) + "</span>");
     h += "</div>";
   }
   if(d.quick_wins.length){
-    h += "<h3>Quick wins</h3>";
+    h += "<h3 class='grad'>Quick wins</h3>";
     d.quick_wins.forEach(x => h += "<div class='pt'>&bull; " + esc(x) + "</div>");
   }
   const el = document.createElement("div");
@@ -425,6 +449,7 @@ function demand(id, message){
   el.classList.add("glow");
   el.focus({ preventScroll:true });
   el.scrollIntoView({ behavior:"smooth", block:"center" });
+  $("hint").className = "hint grad";
   $("hint").textContent = message;
   setTimeout(() => el.classList.remove("glow"), 2600);
 }
@@ -476,8 +501,8 @@ function reqRow(q){
 function fitCard(d){
   const sc = d.match_score;
   const hue = sc >= 7 ? "var(--good)" : (sc >= 5 ? "var(--warn)" : "var(--bad)");
-  let h = "<div class='who'>job fit against the advert</div>";
-  h += "<div class='big' style='color:" + hue + "'>"
+  let h = "<div class='who grad'>job fit against the advert</div>";
+  h += "<div class='big grad' style='" + scoreGrad(sc === null ? 5 : sc) + "'>"
      + (sc === null ? "&mdash;" : sc + "/10") + "</div>";
   h += "<div style='margin-bottom:4px'>" + esc(d.headline) + "</div>";
 
@@ -505,11 +530,11 @@ function fitCard(d){
 
   const musts = (d.requirements || []).filter(q => q.must_have);
   const nices = (d.requirements || []).filter(q => !q.must_have);
-  if(musts.length){ h += "<h3>Required by the advert</h3>"; musts.forEach(q => h += reqRow(q)); }
-  if(nices.length){ h += "<h3>Preferred</h3>"; nices.forEach(q => h += reqRow(q)); }
+  if(musts.length){ h += "<h3 class='grad'>Required by the advert</h3>"; musts.forEach(q => h += reqRow(q)); }
+  if(nices.length){ h += "<h3 class='grad'>Preferred</h3>"; nices.forEach(q => h += reqRow(q)); }
 
   if(d.gaps && d.gaps.length){
-    h += "<h3 class='b'>Your skills gap, worst first</h3>";
+    h += "<h3 class='b grad'>Your skills gap, worst first</h3>";
     d.gaps.forEach(g => h += "<div class='pt'><span class='"
       + (g.status === "missing" ? "b" : "") + "'>"
       + (g.status === "missing" ? "&#10007; " : "&#126; ") + esc(g.requirement) + "</span>"
@@ -517,11 +542,11 @@ function fitCard(d){
       + (g.note ? "<span class='nt'>" + esc(g.note) + "</span>" : "") + "</div>");
   }
   if(d.transferable && d.transferable.length){
-    h += "<h3 class='g'>Strengths the advert did not ask for</h3>";
+    h += "<h3 class='g grad'>Strengths the advert did not ask for</h3>";
     d.transferable.forEach(x => h += "<div class='pt g'>+ " + esc(x) + "</div>");
   }
   if(d.improvements && d.improvements.length){
-    h += "<h3>What would raise the score</h3>";
+    h += "<h3 class='grad'>What would raise the score</h3>";
     d.improvements.forEach(x => h += "<div class='pt'>&bull; " + esc(x) + "</div>");
   }
 
@@ -608,8 +633,9 @@ async function finish(){
     const d = await post("/finish", { role:S.role, turns:S.turns });
     stop(); S.spent += d.estimated_cost_usd;
     const f = d.feedback;
-    let h = "<div class='who'>final feedback</div>";
-    h += "<div class='big'>" + f.overall_score + "/10</div><div style='margin-bottom:10px'>"
+    let h = "<div class='who grad'>final feedback</div>";
+    h += "<div class='big grad' style='" + scoreGrad(f.overall_score) + "'>"
+       + f.overall_score + "/10</div><div style='margin-bottom:10px'>"
        + esc(f.headline) + "</div>";
     if(f.strengths.length){ h += "<b>What went well</b>";
       f.strengths.forEach(x => h += "<div class='g'>+ " + esc(x) + "</div>"); }
