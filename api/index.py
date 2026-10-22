@@ -145,29 +145,52 @@ PAGE = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AI Career Coach</title>
 <style>
-  :root { --bg:#0B1524; --card:#13223A; --card2:#1A2D4A; --ink:#E8F1FB;
-          --muted:#8FA9C7; --line:#27405F; --accent:#4A8FD6; --accent2:#7FBCF5;
-          --good:#3FBF72; --bad:#E2615A; --warn:#E0B341; }
+  :root { --navy:#060F26; --peacock:#0E8C9E; --peacock2:#14AEC4;
+          --royal:#2B6EF2; --turq:#35E0D4; --fluoro:#5CFF4D;
+          --bg:#060F26; --card:#0D1C3D; --card2:#142A57; --ink:#E6F4FF;
+          --muted:#8FB3D9; --line:#1F3B6E;
+          --accent:var(--royal); --accent2:var(--turq);
+          --good:var(--fluoro); --bad:#FF5C7A; --warn:#FFC94D; }
+  @keyframes land {
+    0%   { box-shadow:0 0 0 0 rgba(53,224,212,0) }
+    30%  { box-shadow:0 0 26px 2px rgba(53,224,212,.40) }
+    100% { box-shadow:0 0 0 0 rgba(53,224,212,0) }
+  }
   * { box-sizing:border-box }
   body { margin:0; background:var(--bg); color:var(--ink);
          font:16px/1.6 system-ui,sans-serif }
   .wrap { max-width:780px; margin:0 auto; padding:26px 16px 140px }
-  h1 { font-size:22px; font-weight:600; margin:0 0 4px }
-  h1 span { color:var(--accent2) }
+  h1 { font-size:27px; font-weight:700; letter-spacing:-.01em; margin:0 0 6px;
+       background:linear-gradient(95deg, var(--peacock2) 0%, var(--royal) 32%,
+                  var(--turq) 66%, var(--fluoro) 100%);
+       -webkit-background-clip:text; background-clip:text; color:transparent;
+       width:fit-content }
+  h1 span { color:var(--fluoro); -webkit-text-fill-color:var(--fluoro) }
   .sub { color:var(--muted); font-size:13.5px; margin-bottom:20px }
   label { display:block; font-size:12px; color:var(--muted); text-transform:uppercase;
           letter-spacing:.06em; margin:14px 0 5px }
   input, textarea { width:100%; padding:11px 13px; border:1px solid var(--line);
          border-radius:9px; background:var(--card); color:var(--ink);
          font:15px/1.5 system-ui,sans-serif; resize:vertical }
-  input:focus, textarea:focus { outline:0; border-color:var(--accent);
-         box-shadow:0 0 0 3px rgba(74,143,214,.2) }
+  input:focus, textarea:focus { outline:0; border-color:var(--turq);
+         box-shadow:0 0 0 3px rgba(53,224,212,.22) }
   textarea { min-height:120px }
-  button { padding:11px 22px; border:0; border-radius:9px; background:var(--accent);
-           color:#fff; font-size:15px; font-weight:600; cursor:pointer }
-  button:hover { background:var(--accent2); color:#0B1524 }
-  button:disabled { background:var(--line); color:var(--muted); cursor:default }
-  button.ghost { background:transparent; border:1px solid var(--line); color:var(--muted) }
+  button { padding:11px 22px; border:1px solid var(--peacock); border-radius:9px;
+           background:var(--peacock); color:#fff; font-size:15px; font-weight:600;
+           cursor:pointer; transition:background .15s, color .15s, box-shadow .15s }
+  button:hover { background:var(--peacock2); border-color:var(--peacock2); color:#02121A }
+  button:disabled { background:var(--line); border-color:var(--line);
+                    color:var(--muted); cursor:default }
+  button.ghost { background:transparent; border:1px solid var(--peacock);
+                 color:var(--turq) }
+  button.ghost:hover { background:rgba(14,140,158,.18); border-color:var(--turq);
+                       color:var(--turq) }
+  /* The mode you are in. This has to beat :disabled, because every button is
+     disabled while a request is in flight - and that is exactly when you want
+     to see which one you pressed. */
+  button.sel, button.sel:disabled, button.ghost.sel {
+    background:var(--fluoro); border-color:var(--fluoro); color:var(--navy);
+    cursor:default; box-shadow:0 0 0 3px rgba(92,255,77,.22), 0 0 20px rgba(92,255,77,.30) }
   .msg { background:var(--card); border:1px solid var(--line); border-radius:12px;
          padding:13px 16px; margin:8px 0; white-space:pre-wrap; overflow-wrap:anywhere }
   .me { background:transparent; border:1px dashed var(--accent) }
@@ -189,7 +212,7 @@ PAGE = """<!doctype html>
   .hidden { display:none }
   .big { font-size:30px; font-weight:600 }
   .rev { border:1px solid var(--line); border-radius:12px; padding:14px 16px; margin:10px 0;
-         background:var(--card) }
+         background:var(--card); animation:land .9s ease-out }
   .rev h3 { font-size:14px; margin:12px 0 6px; font-weight:600 }
   .pt { margin:4px 0; font-size:14px; line-height:1.5 }
   .pt .dim { font-size:11px; text-transform:uppercase; letter-spacing:.05em;
@@ -198,6 +221,9 @@ PAGE = """<!doctype html>
           margin:3px 4px 0 0; background:var(--card2); color:var(--muted) }
   .pill.ok { color:var(--good) } .pill.no { color:var(--bad) }
   .row { display:flex; gap:8px; flex-wrap:wrap; margin-top:16px }
+  .row button { background:var(--peacock); border-color:var(--peacock); color:#fff }
+  .row button:hover { background:var(--peacock2); border-color:var(--peacock2);
+                      color:#02121A }
   input[type=file] { padding:9px; background:var(--card) }
   .req { display:flex; gap:9px; align-items:flex-start; padding:7px 0;
          border-bottom:1px solid var(--line); font-size:14px }
@@ -353,7 +379,11 @@ async function postCV(jsonPath, uploadPath){
   return await post(jsonPath, { role: role, job_description: jd, cv_text: pasted });
 }
 
-function busy(on){ ["review","fit","go"].forEach(id => { $(id).disabled = on; }); }
+const MODES = ["review", "fit", "go"];
+function busy(on){ MODES.forEach(id => { $(id).disabled = on; }); }
+
+// Peacock blue until you choose; fluorescent green for the mode you are in.
+function select(id){ MODES.forEach(x => $(x).classList.toggle("sel", x === id)); }
 
 async function runCV(label, jsonPath, uploadPath, render){
   busy(true); $("cvout").innerHTML = "";
@@ -365,8 +395,10 @@ async function runCV(label, jsonPath, uploadPath, render){
   busy(false);
 }
 
-$("review").onclick = () =>
+$("review").onclick = () => {
+  select("review");
   runCV("reading your CV against the role...", "/cv", "/cv/upload", reviewCard);
+};
 
 $("fit").onclick = () => {
   // The server refuses a fit analysis without an advert; saying so here saves
@@ -376,6 +408,7 @@ $("fit").onclick = () => {
         + "read from. Paste the job description above, then try again.");
     return;
   }
+  select("fit");
   runCV("matching your CV against the advert...", "/jobfit", "/jobfit/upload", fitCard);
 };
 
@@ -464,6 +497,7 @@ function fitCard(d){
 $("go").onclick = async () => {
   S.role = $("role").value.trim(); S.focus = $("focus").value.trim(); S.jd = $("jd").value.trim();
   if(!S.role){ alert("Tell it which role first."); return; }
+  select("go");
   $("go").disabled = true;
   const stop = waiting("preparing your interview...");
   try{
@@ -507,8 +541,8 @@ function readyForNextRun(){
   S.turns = []; S.asked = 0; S.lastQ = ""; S.done = false;
   $("bar").classList.add("hidden");
   $("setup").classList.remove("hidden");
-  $("review").disabled = false;
-  $("go").disabled = false;
+  busy(false);
+  select(null);                 // back to peacock: no mode is running
   const note = document.createElement("div");
   note.className = "meta";
   note.textContent = "Review another CV, or start a fresh interview below. "
