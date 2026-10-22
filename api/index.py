@@ -157,19 +157,37 @@ PAGE = """<!doctype html>
     100% { box-shadow:0 0 0 0 rgba(53,224,212,0) }
   }
   * { box-sizing:border-box }
-  body { margin:0; background:var(--bg); color:var(--ink);
-         font:16px/1.6 system-ui,sans-serif }
+  html { background:var(--navy) }
+  /* The title's gradient, reversed and turned down the page: fluorescent green
+     at the very top, resolved to navy by 560px. Pixel stops, not percentages -
+     a percentage stop moves when the page grows, so the band would sit in a
+     different place once a result card landed. */
+  body { margin:0; min-height:100vh; color:var(--ink);
+         font:16px/1.6 system-ui,sans-serif;
+         background-color:var(--navy);
+         background-image:linear-gradient(180deg,
+           var(--fluoro) 0px, var(--turq) 115px, var(--royal) 275px,
+           #0A2E5C 410px, var(--navy) 575px);
+         background-repeat:no-repeat }
   .wrap { max-width:780px; margin:0 auto; padding:26px 16px 140px }
+  /* Everything below the header keeps a navy panel under it, so the labels and
+     inputs never have to be legible against the bright end of the backdrop. */
+  #setup { background:var(--card); border:1px solid var(--line); border-radius:14px;
+           padding:2px 18px 20px; box-shadow:0 10px 34px rgba(4,16,38,.45) }
+  #setup label:first-of-type { margin-top:16px }
   /* Shaded text, the way the title is done. Each user supplies its own
      gradient; this only does the clipping. */
   .grad { -webkit-background-clip:text; background-clip:text;
           color:transparent; -webkit-text-fill-color:transparent;
           width:fit-content }
-  h1 { font-size:27px; font-weight:700; letter-spacing:-.01em; margin:0 0 6px;
-       background-image:linear-gradient(95deg, var(--peacock2) 0%, var(--royal) 32%,
-                        var(--turq) 66%, var(--fluoro) 100%) }
-  h1 span { color:var(--fluoro); -webkit-text-fill-color:var(--fluoro) }
-  .sub { color:var(--muted); font-size:13.5px; margin-bottom:20px }
+  /* Dark shades now, because this sits on the green end of the backdrop.
+     Still a gradient - just read the other way round, like the page. */
+  h1 { font-size:29px; font-weight:700; letter-spacing:-.01em; margin:0 0 6px;
+       background-image:linear-gradient(95deg, #041026 0%, #0A2E5C 45%,
+                        #0C5F6E 100%) }
+  h1 span { color:#041026; -webkit-text-fill-color:#041026 }
+  .sub { color:#06253F; font-size:13.5px; font-weight:500; margin-bottom:20px;
+         max-width:62ch }
   label { display:block; font-size:12px; color:var(--muted); text-transform:uppercase;
           letter-spacing:.06em; margin:14px 0 5px }
   label.must { background-image:linear-gradient(90deg, var(--turq), var(--fluoro) 70%) }
@@ -185,8 +203,10 @@ PAGE = """<!doctype html>
   /* A mandatory field you left empty, in the same green as its label. */
   .glow { border-color:var(--fluoro) !important;
           box-shadow:0 0 0 3px rgba(92,255,77,.22), 0 0 18px rgba(92,255,77,.28) !important }
-  .hint { font-size:12.5px; margin:10px 0 0; min-height:17px; color:var(--fluoro);
-          background-image:linear-gradient(90deg, var(--turq), var(--fluoro) 60%) }
+  .hint { font-size:12.5px; margin:10px 0 0; min-height:17px;
+          background-image:linear-gradient(90deg, var(--turq), var(--fluoro) 60%);
+          -webkit-background-clip:text; background-clip:text;
+          color:transparent; -webkit-text-fill-color:transparent }
   input, textarea { width:100%; padding:11px 13px; border:1px solid var(--line);
          border-radius:9px; background:var(--card); color:var(--ink);
          font:15px/1.5 system-ui,sans-serif; resize:vertical }
@@ -196,7 +216,7 @@ PAGE = """<!doctype html>
   button { padding:11px 22px; border:1px solid var(--peacock); border-radius:9px;
            background:var(--peacock); color:#fff; font-size:15px; font-weight:600;
            cursor:pointer; transition:background .15s, color .15s, box-shadow .15s }
-  button:hover { background:var(--peacock2); border-color:var(--peacock2); color:#02121A }
+  button:hover { background:var(--peacock2); border-color:var(--turq); color:#fff }
   button:disabled { background:var(--line); border-color:var(--line);
                     color:var(--muted); cursor:default }
   button.ghost { background:transparent; border:1px solid var(--peacock);
@@ -245,8 +265,8 @@ PAGE = """<!doctype html>
   .pill.ok { color:var(--good) } .pill.no { color:var(--bad) }
   .row { display:flex; gap:8px; flex-wrap:wrap; margin-top:16px }
   .row button { background:var(--peacock); border-color:var(--peacock); color:#fff }
-  .row button:hover { background:var(--peacock2); border-color:var(--peacock2);
-                      color:#02121A }
+  .row button:hover { background:var(--peacock2); border-color:var(--turq);
+                      color:#fff }
   input[type=file] { padding:9px; background:var(--card) }
   .req { display:flex; gap:9px; align-items:flex-start; padding:7px 0;
          border-bottom:1px solid var(--line); font-size:14px }
@@ -449,7 +469,6 @@ function demand(id, message){
   el.classList.add("glow");
   el.focus({ preventScroll:true });
   el.scrollIntoView({ behavior:"smooth", block:"center" });
-  $("hint").className = "hint grad";
   $("hint").textContent = message;
   setTimeout(() => el.classList.remove("glow"), 2600);
 }
