@@ -169,6 +169,17 @@ PAGE = """<!doctype html>
   .sub { color:var(--muted); font-size:13.5px; margin-bottom:20px }
   label { display:block; font-size:12px; color:var(--muted); text-transform:uppercase;
           letter-spacing:.06em; margin:14px 0 5px }
+  label.must { color:var(--fluoro) }
+  label .need, label .opt { font-size:9.5px; letter-spacing:.05em; padding:1px 6px;
+          border-radius:4px; margin-left:8px; text-transform:uppercase }
+  label .need { background:rgba(92,255,77,.12); color:var(--fluoro);
+                border:1px solid rgba(92,255,77,.38) }
+  label .opt  { background:transparent; color:var(--muted);
+                border:1px solid var(--line) }
+  /* A mandatory field you left empty, in the same green as its label. */
+  .glow { border-color:var(--fluoro) !important;
+          box-shadow:0 0 0 3px rgba(92,255,77,.22), 0 0 18px rgba(92,255,77,.28) !important }
+  .hint { font-size:12.5px; color:var(--fluoro); margin:10px 0 0; min-height:17px }
   input, textarea { width:100%; padding:11px 13px; border:1px solid var(--line);
          border-radius:9px; background:var(--card); color:var(--ink);
          font:15px/1.5 system-ui,sans-serif; resize:vertical }
@@ -246,15 +257,21 @@ PAGE = """<!doctype html>
     reviewed, or matched against the advert requirement by requirement.</div>
 
   <div id="setup">
-    <label for="role">Role you are preparing for</label>
+    <label for="role" class="must">Role you are preparing for
+      <span class="need">required for all three</span></label>
     <input id="role" placeholder="Agentic AI Engineer">
-    <label for="focus">What should it press you on? (optional)</label>
+    <label for="focus">What should it press you on?
+      <span class="opt">optional</span></label>
     <input id="focus" placeholder="tool calling, system design">
-    <label for="jd">Job description (optional, sharper questions)</label>
+    <label for="jd" class="must">Job description
+      <span class="need">required for job-fit</span>
+      <span class="opt">sharpens the other two</span></label>
     <textarea id="jd" placeholder="Paste the advert here..."></textarea>
-    <label for="cvfile">Your CV &mdash; upload (PDF, DOCX, TXT)</label>
+    <label for="cvfile" class="must">Your CV &mdash; upload (PDF, DOCX, TXT)
+      <span class="need">required for CV review and job-fit</span></label>
     <input id="cvfile" type="file" accept=".pdf,.docx,.txt,.md">
-    <label for="cvtext">&hellip;or paste it instead</label>
+    <label for="cvtext" class="must">&hellip;or paste it instead
+      <span class="opt">whichever you prefer</span></label>
     <textarea id="cvtext" placeholder="Paste your CV text here..."></textarea>
 
     <div class="row">
@@ -262,6 +279,7 @@ PAGE = """<!doctype html>
       <button id="fit" class="ghost">Job-fit analysis</button>
       <button id="go" class="ghost">Skip and start interview</button>
     </div>
+    <div class="hint" id="hint"></div>
   </div>
 
   <div id="cvout"></div>
@@ -385,6 +403,39 @@ function busy(on){ MODES.forEach(id => { $(id).disabled = on; }); }
 // Peacock blue until you choose; fluorescent green for the mode you are in.
 function select(id){ MODES.forEach(x => $(x).classList.toggle("sel", x === id)); }
 
+// What each button actually needs. The green labels advertise this same list,
+// so a badge and a guard cannot disagree about what is mandatory.
+const NEEDS = { review: ["role", "cv"], fit: ["role", "cv", "jd"], go: ["role"] };
+
+function firstMissing(mode){
+  for(const need of NEEDS[mode]){
+    if(need === "role" && !$("role").value.trim())
+      return ["role", "Tell it which role you are preparing for."];
+    if(need === "cv" && !$("cvfile").files[0] && !$("cvtext").value.trim())
+      return ["cvtext", "Upload your CV above, or paste the text in here."];
+    if(need === "jd" && $("jd").value.trim().length < """ + str(MIN_JD_FOR_FIT) + """)
+      return ["jd", "A job-fit analysis reads the requirements out of the advert, "
+                  + "so it needs the advert. Paste it here."];
+  }
+  return null;
+}
+
+function demand(id, message){
+  const el = $(id);
+  el.classList.add("glow");
+  el.focus({ preventScroll:true });
+  el.scrollIntoView({ behavior:"smooth", block:"center" });
+  $("hint").textContent = message;
+  setTimeout(() => el.classList.remove("glow"), 2600);
+}
+
+function ready(mode){
+  const miss = firstMissing(mode);
+  if(miss){ demand(miss[0], miss[1]); return false; }
+  $("hint").textContent = "";
+  return true;
+}
+
 async function runCV(label, jsonPath, uploadPath, render){
   busy(true); $("cvout").innerHTML = "";
   const stop = waiting(label);
@@ -396,18 +447,15 @@ async function runCV(label, jsonPath, uploadPath, render){
 }
 
 $("review").onclick = () => {
+  if(!ready("review")) return;
   select("review");
   runCV("reading your CV against the role...", "/cv", "/cv/upload", reviewCard);
 };
 
 $("fit").onclick = () => {
-  // The server refuses a fit analysis without an advert; saying so here saves
-  // the round trip. The threshold is the server's own, not a second opinion.
-  if($("jd").value.trim().length < """ + str(MIN_JD_FOR_FIT) + """){
-    alert("A job-fit analysis needs the advert - that is where the requirements are "
-        + "read from. Paste the job description above, then try again.");
-    return;
-  }
+  // The server refuses a fit analysis without an advert; checking here saves the
+  // round trip, against the server's own threshold rather than a second opinion.
+  if(!ready("fit")) return;
   select("fit");
   runCV("matching your CV against the advert...", "/jobfit", "/jobfit/upload", fitCard);
 };
@@ -496,7 +544,7 @@ function fitCard(d){
 
 $("go").onclick = async () => {
   S.role = $("role").value.trim(); S.focus = $("focus").value.trim(); S.jd = $("jd").value.trim();
-  if(!S.role){ alert("Tell it which role first."); return; }
+  if(!ready("go")) return;
   select("go");
   $("go").disabled = true;
   const stop = waiting("preparing your interview...");
