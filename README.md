@@ -1,4 +1,4 @@
-# AI Career Coach
+# AI Career Coach & CV Evaluation
 
 Mini-project, Ironhack AI Engineering FT Sept 26.
 Brief: `ironhack-rmt-AI-student-materials/project-brief-AI-powered-career-coach`

@@ -25,8 +25,9 @@ except ImportError:                                  # pragma: no cover
                        MODEL, Turn, analyse_fit, extract_cv_text, final_feedback,
                        first_question, next_question, review_cv)
 
-app = FastAPI(title="AI Career Coach", version="1.0.0",
-              description="Mock interview practice. Mini-project, Ironhack AI FT Sept 26.")
+app = FastAPI(title="AI Career Coach & CV Evaluation", version="1.1.0",
+              description="CV review, job-fit analysis and mock interview practice. "
+                          "Mini-project, Ironhack AI FT Sept 26.")
 
 
 class StartRequest(BaseModel):
@@ -143,7 +144,7 @@ def health():
 PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AI Career Coach</title>
+<title>AI Career Coach &amp; CV Evaluation</title>
 <style>
   :root { --navy:#060F26; --peacock:#0E8C9E; --peacock2:#14AEC4;
           --royal:#2B6EF2; --turq:#35E0D4; --fluoro:#5CFF4D;
@@ -283,10 +284,11 @@ PAGE = """<!doctype html>
   .sum b { color:var(--ink) }
 </style></head><body>
 <div class="wrap">
-  <h1 class="grad">AI Career Coach<span>.</span></h1>
-  <div class="sub">Paste the job you are preparing for. It interviews you one question at a
-    time, marks every answer, and scores the whole thing at the end. Or have your CV
-    reviewed, or matched against the advert requirement by requirement.</div>
+  <h1 class="grad">AI Career Coach <span>&amp;</span> CV Evaluation</h1>
+  <div class="sub">Three things, one page. Have your CV reviewed on its own merits,
+    matched against a specific advert requirement by requirement, or sit a mock interview
+    that asks one question at a time, marks every answer and scores the whole thing at
+    the end.</div>
 
   <div id="setup">
     <label for="role" class="must grad">Role you are preparing for
