@@ -1,7 +1,18 @@
 # AI Career Coach & CV Evaluation
 
+**Live app: https://career-coach-api-subha-project.vercel.app/**
+No sign-in needed. Three modes on one page.
+
+| | |
+|---|---|
+| Live | https://career-coach-api-subha-project.vercel.app/ |
+| API docs | https://career-coach-api-subha-project.vercel.app/docs |
+| Health | https://career-coach-api-subha-project.vercel.app/health |
+
 Mini-project, Ironhack AI Engineering FT Sept 26.
 Brief: `ironhack-rmt-AI-student-materials/project-brief-AI-powered-career-coach`
+
+Submitted by Subharanjan Chakraborty.
 
 Paste the job you are preparing for. It interviews you **one question at a time**,
 marks every answer out of 10, and scores the whole interview at the end. It also
